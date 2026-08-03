@@ -1,0 +1,19 @@
+FROM node:20-slim AS build
+WORKDIR /app
+COPY package.json package-lock.json* ./
+RUN npm install
+COPY tsconfig.json ./
+COPY src ./src
+RUN npm run build
+
+FROM node:20-slim
+WORKDIR /app
+ENV NODE_ENV=production
+RUN useradd --system --create-home appuser
+COPY package.json package-lock.json* ./
+RUN npm install --omit=dev
+COPY --from=build /app/dist ./dist
+USER appuser
+
+EXPOSE 3000
+CMD ["node", "dist/server.js"]

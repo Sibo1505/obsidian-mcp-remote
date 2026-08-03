@@ -1,0 +1,22 @@
+services:
+  obsidian-mcp-remote:
+    build: .
+    container_name: obsidian-mcp-remote
+    restart: unless-stopped
+    environment:
+      - VAULT_PATH=/vault
+      - TOKEN_INTERNAL=${TOKEN_INTERNAL}
+      - TOKEN_EXTERNAL=${TOKEN_EXTERNAL}
+      - DOMAIN=${DOMAIN}
+      - PORT=3000
+    volumes:
+      - ${VAULT_PATH}:/vault
+    read_only: true
+    tmpfs:
+      - /tmp
+    networks:
+      - npm_shared
+
+networks:
+  npm_shared:
+    external: true
