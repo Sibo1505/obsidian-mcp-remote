@@ -3,9 +3,12 @@ import { z } from "zod";
 const configSchema = z.object({
   VAULT_PATH: z.string().min(1),
   TOKEN_INTERNAL: z.string().min(32),
-  TOKEN_EXTERNAL: z.string().min(32),
   DOMAIN: z.string().min(1),
   PORT: z.coerce.number().int().positive().default(3000),
+  OAUTH_PASSWORD: z.string().min(16),
+  OAUTH_CLIENT_ID: z.string().min(1),
+  OAUTH_CLIENT_SECRET: z.string().min(32),
+  OAUTH_CLIENT_REDIRECT_URI: z.string().min(1),
 });
 
 export type Config = z.infer<typeof configSchema>;
