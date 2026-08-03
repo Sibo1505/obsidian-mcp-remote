@@ -10,7 +10,7 @@ services:
       - DOMAIN=${DOMAIN}
       - PORT=3000
     ports:
-      - "${TAILSCALE_IP}:3000:3000"
+      - "${TAILSCALE_IP}:${HOST_PORT}:3000"
     volumes:
       - ${VAULT_PATH}:/vault
     read_only: true
