@@ -8,16 +8,23 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/server.js",
-    "dev": "tsx watch src/server.ts"
+    "dev": "tsx watch src/server.ts",
+    "test": "tsx --test test/fs.test.ts test/middleware.test.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
     "express": "^4.21.0",
+    "express-rate-limit": "^8.6.1",
     "fast-glob": "^3.3.0",
+    "gray-matter": "^4.0.3",
+    "helmet": "^8.3.0",
+    "json-logic-js": "^2.0.5",
+    "minimatch": "^10.2.6",
     "zod": "^3.24.0"
   },
   "devDependencies": {
     "@types/express": "^4.17.0",
+    "@types/json-logic-js": "^2.0.8",
     "@types/node": "^22.0.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"
