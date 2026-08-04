@@ -34,10 +34,10 @@ export async function createRegistrationOptions(domain: string) {
     userName: "sebastian",
     userID: USER_ID,
     attestationType: "none",
-    // "platform" = Windows Hello / Touch ID / Android biometrics. Without this, Windows' native
-    // WebAuthn dialog can default to prompting for a roaming USB security key instead, which is
-    // confusing when the goal is a quick built-in-biometric login.
-    authenticatorSelection: { residentKey: "preferred", userVerification: "preferred", authenticatorAttachment: "platform" },
+    // No authenticatorAttachment restriction: leaving it open is what makes Windows show its full
+    // picker (Windows Hello, USB security key, "use a phone or tablet" via QR/hybrid transport)
+    // instead of forcing one specific method.
+    authenticatorSelection: { residentKey: "preferred", userVerification: "preferred" },
   });
   setPendingRegistrationChallenge(options.challenge);
   return options;
