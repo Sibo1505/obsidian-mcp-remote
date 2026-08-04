@@ -5,7 +5,7 @@ import { renderAuthorizeForm } from "./authorize-view.js";
 import { notifySecurityEvent } from "../notify.js";
 import { hasPasskey, verifyAuthentication } from "../webauthn/service.js";
 
-const RESOURCE_OWNER = { id: "sebastian" };
+const RESOURCE_OWNER = { id: "owner" };
 
 // client_name is looked up server-side from the registered client record, never trusted from
 // query/body — a spoofed hidden field could otherwise impersonate a legitimate client's name.

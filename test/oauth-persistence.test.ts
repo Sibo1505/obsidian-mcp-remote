@@ -25,8 +25,8 @@ test("saveState/loadState round-trips clients and tokens", async () => {
     const filePath = path.join(dir, "nested", "oauth-store.json");
     const state: PersistedState = {
       clients: [{ id: "client-1", redirectUris: ["https://a.example/cb"], grants: ["authorization_code"] }],
-      accessTokens: [{ token: "at-1", clientId: "client-1", userId: "sebastian", expiresAt: new Date().toISOString() }],
-      refreshTokens: [{ token: "rt-1", clientId: "client-1", userId: "sebastian" }],
+      accessTokens: [{ token: "at-1", clientId: "client-1", userId: "owner", expiresAt: new Date().toISOString() }],
+      refreshTokens: [{ token: "rt-1", clientId: "client-1", userId: "owner" }],
     };
 
     saveState(filePath, state);

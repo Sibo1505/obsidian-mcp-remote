@@ -18,7 +18,7 @@ const refreshTokens = new Map<string, OAuth2Server.RefreshToken>();
 let storePath: string | undefined;
 
 function userId(user: OAuth2Server.User | undefined): string {
-  return (user as { id?: string } | undefined)?.id ?? "sebastian";
+  return (user as { id?: string } | undefined)?.id ?? "owner";
 }
 
 function persist(): void {
@@ -55,7 +55,7 @@ function persist(): void {
  */
 export function initStore(filePath: string): void {
   const state = loadState(filePath);
-  const user = { id: "sebastian" };
+  const user = { id: "owner" };
 
   for (const c of state.clients) {
     clients.set(c.id, { ...c });

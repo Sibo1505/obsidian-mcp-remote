@@ -81,7 +81,7 @@ test("service: createRegistrationOptions targets the configured rpID and sets a 
     initWebAuthnStore(path.join(dir, "webauthn-credential.json"));
     const options = await createRegistrationOptions("example.com");
     assert.equal(options.rp.id, "example.com");
-    assert.equal(options.user.name, "sebastian");
+    assert.equal(options.user.name, "owner");
     assert.equal(consumePendingRegistrationChallenge(), options.challenge);
   } finally {
     await rm(dir, { recursive: true, force: true });

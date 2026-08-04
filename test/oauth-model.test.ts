@@ -6,7 +6,7 @@ test("saveAuthorizationCode/getAuthorizationCode round-trips PKCE fields", async
   const model = createModel();
   const client = { id: "client-1", redirectUris: ["http://localhost:9999/cb"], grants: ["authorization_code"] };
   registerClient(client);
-  const user = { id: "sebastian" };
+  const user = { id: "owner" };
 
   const saved = await model.saveAuthorizationCode(
     {
@@ -71,7 +71,7 @@ test("refresh token round-trip via saveToken/getRefreshToken/revokeToken", async
   const model = createModel();
   const client = { id: "client-3", redirectUris: ["https://a.example/cb"], grants: ["authorization_code", "refresh_token"] };
   registerClient(client);
-  const user = { id: "sebastian" };
+  const user = { id: "owner" };
 
   await model.saveToken(
     {

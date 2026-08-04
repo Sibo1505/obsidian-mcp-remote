@@ -17,7 +17,7 @@ import {
 const RP_NAME = "obsidian-mcp-remote";
 // Fixed handle for the single user this tool ever serves — WebAuthn user IDs aren't secret, just
 // an opaque per-account identifier, so a stable constant is fine (no multi-user story here).
-const USER_ID = new TextEncoder().encode("sebastian");
+const USER_ID = new TextEncoder().encode("owner");
 
 function originFor(domain: string): string {
   return `https://${domain}`;
@@ -31,7 +31,7 @@ export async function createRegistrationOptions(domain: string) {
   const options = await generateRegistrationOptions({
     rpName: RP_NAME,
     rpID: domain,
-    userName: "sebastian",
+    userName: "owner",
     // Shown to the user by their OS/password manager as the account label — kept generic since
     // this codebase is meant for anyone to self-host, not just the original author.
     userDisplayName: "Vault Owner",
