@@ -1,3 +1,10 @@
+# Pinned explicitly so the project name (and therefore volume names, e.g. "<name>_oauth-data")
+# stays stable regardless of which directory this file lives in — Compose otherwise derives it
+# from the containing folder's name, which would silently create a fresh, empty volume (losing
+# the registered passkey and OAuth clients) if this ever gets moved, e.g. into Dockge's managed
+# stack directory. Matches the name already in use, so this is a no-op for the current deployment.
+name: obsidian-mcp-remote-test
+
 services:
   obsidian-mcp-remote:
     build: .
