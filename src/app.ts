@@ -151,7 +151,20 @@ export function createApp(config: Config): express.Express {
   app.use((req, res, next) => {
     const start = Date.now();
     res.on("finish", () => {
-      console.log(`${req.method} ${req.path} -> ${res.statusCode} (${Date.now() - start}ms)`);
+      let extra = "";
+      const location = res.getHeader("location");
+      if (typeof location === "string") {
+        // Redact the single-use auth code itself (no reason to persist it in logs), but keep
+        // error/error_description/state visible — that's the whole point of logging this.
+        try {
+          const url = new URL(location);
+          if (url.searchParams.has("code")) url.searchParams.set("code", "<redacted>");
+          extra = ` -> Location: ${url.toString()}`;
+        } catch {
+          extra = ` -> Location: ${location}`;
+        }
+      }
+      console.log(`${req.method} ${req.path} -> ${res.statusCode} (${Date.now() - start}ms)${extra}`);
     });
     next();
   });
