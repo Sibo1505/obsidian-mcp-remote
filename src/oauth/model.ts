@@ -107,8 +107,12 @@ export function createModel(): Model {
     async getClient(clientId, clientSecret) {
       const client = clients.get(clientId);
       if (!client) return false;
-      // Public clients (dynamically registered via DCR) have no secret — PKCE is their security boundary.
-      if (client.clientSecret) {
+      // The library's AuthorizeHandler always calls this with clientSecret === null by design
+      // (RFC 6749: the /authorize step never authenticates the client, only /token does) — only
+      // the token endpoint ever passes a real value (or omits the argument entirely for public
+      // clients). Skip the check for that specific null sentinel, or every confidential client
+      // (e.g. the preregistered claude.ai client) would get rejected before reaching /authorize.
+      if (client.clientSecret && clientSecret !== null) {
         if (!clientSecret || !timingSafeEqualStrings(clientSecret, client.clientSecret)) return false;
       }
       return client;

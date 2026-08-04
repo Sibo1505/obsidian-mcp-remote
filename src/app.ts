@@ -161,13 +161,23 @@ export function createApp(config: Config): express.Express {
   app.get("/.well-known/oauth-authorization-server", authorizationServerMetadata);
   app.get("/.well-known/oauth-protected-resource", protectedResourceMetadata);
   app.post("/register", registerRateLimit, registerHandler);
+
+  const authorizePostHandler = authorizePost(oauthServer, {
+    oauthPassword: config.OAUTH_PASSWORD,
+    domain: config.DOMAIN,
+    ntfyTopic: config.NTFY_TOPIC,
+  });
   app.get("/oauth/authorize", authorizeGet);
-  app.post(
-    "/oauth/authorize",
-    authorizeRateLimit,
-    authorizePost(oauthServer, { oauthPassword: config.OAUTH_PASSWORD, domain: config.DOMAIN, ntfyTopic: config.NTFY_TOPIC }),
-  );
+  app.post("/oauth/authorize", authorizeRateLimit, authorizePostHandler);
   app.post("/oauth/token", tokenRateLimit, oauthServer.token());
+
+  // Aliases at the conventional root-level paths (no /oauth prefix): the discovery metadata above
+  // correctly advertises /oauth/authorize + /oauth/token, and mcp-remote (Desktop/Code) follows it
+  // correctly — but claude.ai's Custom Connector flow was observed hitting /authorize directly,
+  // ignoring discovery. Same handlers, just reachable at both paths.
+  app.get("/authorize", authorizeGet);
+  app.post("/authorize", authorizeRateLimit, authorizePostHandler);
+  app.post("/token", tokenRateLimit, oauthServer.token());
 
   app.get("/webauthn/setup", webauthnSetupGet);
   app.post("/webauthn/setup/options", authorizeRateLimit, webauthnSetupOptions(config.OAUTH_PASSWORD, config.DOMAIN));

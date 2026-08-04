@@ -46,6 +46,19 @@ test("getClient rejects a mismatched secret for a confidential client", async ()
   assert.ok(right);
 });
 
+test("getClient accepts a confidential client when called with clientSecret=null, matching AuthorizeHandler's internal call", async () => {
+  const model = createModel();
+  registerClient({
+    id: "client-confidential-2",
+    clientSecret: "correct-secret",
+    redirectUris: ["https://example.com/cb"],
+    grants: ["authorization_code"],
+  });
+
+  const result = await model.getClient("client-confidential-2", null as unknown as string);
+  assert.ok(result);
+});
+
 test("getClient accepts a public client without a secret", async () => {
   const model = createModel();
   registerClient({
