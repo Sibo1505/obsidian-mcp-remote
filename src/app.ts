@@ -12,7 +12,7 @@ import { vaultPatchSchema, vaultPatch } from "./tools/vault-patch.js";
 import { vaultListSchema, vaultList } from "./tools/vault-list.js";
 import { searchQuerySchema, searchQuery } from "./tools/search-query.js";
 import { createOAuthServer } from "./oauth/server.js";
-import { registerClient } from "./oauth/model.js";
+import { registerClient, initStore } from "./oauth/model.js";
 import { registerHandler } from "./oauth/register.js";
 import { authorizationServerMetadata, protectedResourceMetadata } from "./oauth/discovery.js";
 import { authorizeGet, authorizePost } from "./oauth/authorize-route.js";
@@ -62,6 +62,10 @@ function registerTools(server: McpServer, config: Config) {
 }
 
 export function createApp(config: Config): express.Express {
+  // Reload clients/tokens that survived a previous process — without this, every container
+  // restart wiped OAuth state and forced every client through the password login again.
+  initStore(config.OAUTH_STORE_PATH);
+
   const oauthServer = createOAuthServer();
 
   // Preregistered client for the future Mobile/Web Custom Connector flow (claude.ai UI supports
@@ -78,6 +82,33 @@ export function createApp(config: Config): express.Express {
   const mcpRateLimit = rateLimit({
     windowMs: 60_000,
     limit: 60,
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+
+  // Password-guessing protection for /oauth/authorize: the OAUTH_PASSWORD is the only gate on this
+  // publicly reachable endpoint, so it gets a much tighter limit than /mcp.
+  const authorizeRateLimit = rateLimit({
+    windowMs: 15 * 60_000,
+    limit: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+
+  // /oauth/token is hit by legitimate clients on every refresh, but still needs a ceiling against
+  // authorization-code / refresh-token guessing.
+  const tokenRateLimit = rateLimit({
+    windowMs: 15 * 60_000,
+    limit: 30,
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+
+  // /register is unauthenticated by design (RFC 7591 DCR) — limit it to stop unbounded client
+  // registration from filling up the in-memory client store.
+  const registerRateLimit = rateLimit({
+    windowMs: 60 * 60_000,
+    limit: 20,
     standardHeaders: true,
     legacyHeaders: false,
   });
@@ -99,10 +130,10 @@ export function createApp(config: Config): express.Express {
 
   app.get("/.well-known/oauth-authorization-server", authorizationServerMetadata);
   app.get("/.well-known/oauth-protected-resource", protectedResourceMetadata);
-  app.post("/register", registerHandler);
+  app.post("/register", registerRateLimit, registerHandler);
   app.get("/oauth/authorize", authorizeGet);
-  app.post("/oauth/authorize", authorizePost(oauthServer, config.OAUTH_PASSWORD));
-  app.post("/oauth/token", oauthServer.token());
+  app.post("/oauth/authorize", authorizeRateLimit, authorizePost(oauthServer, config.OAUTH_PASSWORD));
+  app.post("/oauth/token", tokenRateLimit, oauthServer.token());
 
   app.post("/mcp", mcpRateLimit, combinedAuth(config.TOKEN_INTERNAL, oauthServer), async (req, res) => {
     const server = new McpServer({ name: "obsidian-mcp-remote", version: "0.1.0" });

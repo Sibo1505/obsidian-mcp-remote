@@ -1,5 +1,6 @@
 interface AuthorizeParams {
   client_id?: string;
+  client_name?: string;
   redirect_uri?: string;
   state?: string;
   code_challenge?: string;
@@ -31,7 +32,7 @@ export function renderAuthorizeForm(params: AuthorizeParams, errorMessage?: stri
 </head>
 <body style="font-family: system-ui, sans-serif; max-width: 24rem; margin: 4rem auto; padding: 0 1rem;">
   <h1 style="font-size: 1.25rem;">Vault-Zugriff autorisieren</h1>
-  <p style="color: #555;">Client: <strong>${escapeHtml(params.client_id ?? "unknown")}</strong></p>
+  <p style="color: #555;">Client: <strong>${escapeHtml(params.client_name ?? params.client_id ?? "unknown")}</strong>${params.client_name ? ` <span style="color: #999;">(${escapeHtml(params.client_id ?? "unknown")})</span>` : ""}</p>
   ${errorMessage ? `<p style="color: #c00;">${escapeHtml(errorMessage)}</p>` : ""}
   <form method="post" action="/oauth/authorize">
     ${hiddenField("client_id", params.client_id)}

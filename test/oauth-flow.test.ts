@@ -29,6 +29,7 @@ async function withTestServer(fn: (baseUrl: string, config: Config) => Promise<v
     OAUTH_CLIENT_ID: "preregistered-client",
     OAUTH_CLIENT_SECRET: "b".repeat(32),
     OAUTH_CLIENT_REDIRECT_URI: "https://claude.ai/CHANGEME",
+    OAUTH_STORE_PATH: path.join(vaultRoot, "oauth-store.json"),
   };
 
   const app = createApp(config);
@@ -201,5 +202,103 @@ test("/mcp rejects requests with no valid credential at all", async () => {
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
     });
     assert.equal(res.status, 401);
+  });
+});
+
+test("consent screen shows the registered client_name instead of the raw client_id", async () => {
+  await withTestServer(async (baseUrl) => {
+    const registerRes = await fetch(`${baseUrl}/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        redirect_uris: ["http://127.0.0.1:9999/callback"],
+        client_name: "My Test MCP Client",
+      }),
+    });
+    const { client_id: clientId } = (await registerRes.json()) as { client_id: string };
+
+    const formRes = await fetch(`${baseUrl}/oauth/authorize?client_id=${clientId}&redirect_uri=http://127.0.0.1:9999/callback&response_type=code`);
+    const html = await formRes.text();
+    assert.match(html, /My Test MCP Client/);
+  });
+});
+
+test("refresh grant rotates the refresh token: old one stops working, new one differs", async () => {
+  await withTestServer(async (baseUrl) => {
+    const registerRes = await fetch(`${baseUrl}/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ redirect_uris: ["http://127.0.0.1:9999/callback"] }),
+    });
+    const { client_id: clientId } = (await registerRes.json()) as { client_id: string };
+    const { verifier, challenge } = makePkcePair();
+
+    const authorizeRes = await fetch(`${baseUrl}/oauth/authorize`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      redirect: "manual",
+      body: new URLSearchParams({
+        password: "correct-horse-battery-staple",
+        client_id: clientId,
+        redirect_uri: "http://127.0.0.1:9999/callback",
+        response_type: "code",
+        state: "xyz",
+        code_challenge: challenge,
+        code_challenge_method: "S256",
+      }),
+    });
+    const code = new URL(authorizeRes.headers.get("location")!).searchParams.get("code");
+
+    const firstTokenRes = await fetch(`${baseUrl}/oauth/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        code: code!,
+        redirect_uri: "http://127.0.0.1:9999/callback",
+        client_id: clientId,
+        code_verifier: verifier,
+      }),
+    });
+    const firstTokens = (await firstTokenRes.json()) as { refresh_token: string };
+
+    const refreshRes = await fetch(`${baseUrl}/oauth/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: firstTokens.refresh_token,
+        client_id: clientId,
+      }),
+    });
+    assert.equal(refreshRes.status, 200);
+    const secondTokens = (await refreshRes.json()) as { refresh_token: string };
+    assert.notEqual(secondTokens.refresh_token, firstTokens.refresh_token);
+
+    const reuseRes = await fetch(`${baseUrl}/oauth/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: firstTokens.refresh_token,
+        client_id: clientId,
+      }),
+    });
+    assert.equal(reuseRes.status, 400);
+  });
+});
+
+test("consent screen falls back to the raw client_id when no client_name was registered", async () => {
+  await withTestServer(async (baseUrl) => {
+    const registerRes = await fetch(`${baseUrl}/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ redirect_uris: ["http://127.0.0.1:9999/callback"] }),
+    });
+    const { client_id: clientId } = (await registerRes.json()) as { client_id: string };
+
+    const formRes = await fetch(`${baseUrl}/oauth/authorize?client_id=${clientId}&redirect_uri=http://127.0.0.1:9999/callback&response_type=code`);
+    const html = await formRes.text();
+    assert.match(html, new RegExp(clientId));
   });
 });

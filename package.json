@@ -9,7 +9,8 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "dev": "tsx watch src/server.ts",
-    "test": "tsx --test test/fs.test.ts test/middleware.test.ts test/oauth-model.test.ts test/oauth-flow.test.ts"
+    "setup": "node scripts/setup.mjs",
+    "test": "tsx --test test/fs.test.ts test/middleware.test.ts test/oauth-model.test.ts test/oauth-flow.test.ts test/rate-limit.test.ts test/oauth-persistence.test.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",

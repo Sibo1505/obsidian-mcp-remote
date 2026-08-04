@@ -10,6 +10,7 @@ FROM node:20-slim
 WORKDIR /app
 ENV NODE_ENV=production
 RUN useradd --system --create-home appuser
+RUN mkdir -p /data && chown appuser:appuser /data
 COPY package.json package-lock.json* ./
 RUN npm install --omit=dev
 COPY --from=build /app/dist ./dist

@@ -45,12 +45,14 @@ export function registerHandler(req: Request, res: Response) {
     id: clientId,
     redirectUris: redirect_uris,
     grants: ["authorization_code", "refresh_token"],
+    clientName: parsed.data.client_name,
   });
 
   res.status(201).json({
     client_id: clientId,
     client_id_issued_at: Math.floor(Date.now() / 1000),
     redirect_uris,
+    client_name: parsed.data.client_name,
     token_endpoint_auth_method: "none",
     grant_types: ["authorization_code", "refresh_token"],
     response_types: ["code"],

@@ -1,11 +1,13 @@
 import type OAuth2Server from "@node-oauth/oauth2-server";
 import { timingSafeEqualStrings } from "../util/timing-safe-equal.js";
+import { loadState, saveState, type PersistedToken } from "./persistence.js";
 
 export interface StoredClient extends OAuth2Server.Client {
   id: string;
   redirectUris: string[];
   grants: string[];
   clientSecret?: string;
+  clientName?: string;
 }
 
 const clients = new Map<string, StoredClient>();
@@ -13,8 +15,80 @@ const authorizationCodes = new Map<string, OAuth2Server.AuthorizationCode>();
 const accessTokens = new Map<string, OAuth2Server.Token>();
 const refreshTokens = new Map<string, OAuth2Server.RefreshToken>();
 
+let storePath: string | undefined;
+
+function userId(user: OAuth2Server.User | undefined): string {
+  return (user as { id?: string } | undefined)?.id ?? "sebastian";
+}
+
+function persist(): void {
+  if (!storePath) return;
+  const toPersistedToken = (accessOrRefreshToken: string, expiresAt: Date | undefined, scope: OAuth2Server.Token["scope"], client: OAuth2Server.Client, user: OAuth2Server.User): PersistedToken => ({
+    token: accessOrRefreshToken,
+    expiresAt: expiresAt?.toISOString(),
+    scope: Array.isArray(scope) ? scope : undefined,
+    clientId: (client as StoredClient).id,
+    userId: userId(user),
+  });
+
+  saveState(storePath, {
+    clients: [...clients.values()].map((c) => ({
+      id: c.id,
+      redirectUris: c.redirectUris,
+      grants: c.grants,
+      clientSecret: c.clientSecret,
+      clientName: c.clientName,
+    })),
+    accessTokens: [...accessTokens.values()].map((t) =>
+      toPersistedToken(t.accessToken, t.accessTokenExpiresAt, t.scope, t.client, t.user),
+    ),
+    refreshTokens: [...refreshTokens.values()]
+      .filter((t): t is OAuth2Server.RefreshToken & { refreshToken: string } => !!t.refreshToken)
+      .map((t) => toPersistedToken(t.refreshToken, t.refreshTokenExpiresAt, t.scope, t.client, t.user)),
+  });
+}
+
+/**
+ * Loads previously persisted clients/tokens back into memory and switches persist() on for
+ * subsequent writes. Call once at startup, before any requests are served — without this the
+ * store behaves exactly as before (in-memory only), which is what tests rely on.
+ */
+export function initStore(filePath: string): void {
+  const state = loadState(filePath);
+  const user = { id: "sebastian" };
+
+  for (const c of state.clients) {
+    clients.set(c.id, { ...c });
+  }
+  for (const t of state.accessTokens) {
+    const client = clients.get(t.clientId);
+    if (!client) continue;
+    accessTokens.set(t.token, {
+      accessToken: t.token,
+      accessTokenExpiresAt: t.expiresAt ? new Date(t.expiresAt) : undefined,
+      scope: t.scope,
+      client,
+      user,
+    });
+  }
+  for (const t of state.refreshTokens) {
+    const client = clients.get(t.clientId);
+    if (!client) continue;
+    refreshTokens.set(t.token, {
+      refreshToken: t.token,
+      refreshTokenExpiresAt: t.expiresAt ? new Date(t.expiresAt) : undefined,
+      scope: t.scope,
+      client,
+      user,
+    });
+  }
+
+  storePath = filePath;
+}
+
 export function registerClient(client: StoredClient): void {
   clients.set(client.id, client);
+  persist();
 }
 
 export function findClient(clientId: string): StoredClient | undefined {
@@ -88,6 +162,7 @@ export function createModel(): Model {
           user,
         });
       }
+      persist();
       return record;
     },
 
@@ -100,7 +175,9 @@ export function createModel(): Model {
     },
 
     async revokeToken(token) {
-      return refreshTokens.delete(token.refreshToken);
+      const deleted = refreshTokens.delete(token.refreshToken);
+      persist();
+      return deleted;
     },
   };
 }

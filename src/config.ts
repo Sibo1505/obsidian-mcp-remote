@@ -9,6 +9,7 @@ const configSchema = z.object({
   OAUTH_CLIENT_ID: z.string().min(1),
   OAUTH_CLIENT_SECRET: z.string().min(32),
   OAUTH_CLIENT_REDIRECT_URI: z.string().min(1),
+  OAUTH_STORE_PATH: z.string().min(1).default("/data/oauth-store.json"),
 });
 
 export type Config = z.infer<typeof configSchema>;
