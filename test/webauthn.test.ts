@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { AddressInfo } from "node:net";
+import { withTestServer } from "./helpers.js";
 import {
   initWebAuthnStore,
   getCredential,
@@ -18,8 +18,6 @@ import {
   consumePendingAuthenticationChallenge,
 } from "../src/webauthn/challenge.js";
 import { createRegistrationOptions, createAuthenticationOptions, hasPasskey } from "../src/webauthn/service.js";
-import { createApp } from "../src/app.js";
-import type { Config } from "../src/config.js";
 
 const SAMPLE_CREDENTIAL: StoredCredential = {
   id: "sample-credential-id",
@@ -116,36 +114,6 @@ test("service: createAuthenticationOptions targets the registered credential onc
   }
 });
 
-async function withTestServer(fn: (baseUrl: string, webauthnStorePath: string) => Promise<void>) {
-  const vaultRoot = await mkdtemp(path.join(tmpdir(), "webauthn-routes-"));
-  const webauthnStorePath = path.join(vaultRoot, "webauthn-credential.json");
-  const config: Config = {
-    VAULT_PATH: vaultRoot,
-    TOKEN_INTERNAL: "a".repeat(32),
-    DOMAIN: "test.local",
-    PORT: 0,
-    OAUTH_PASSWORD: "correct-horse-battery-staple",
-    OAUTH_CLIENT_ID: "preregistered-client",
-    OAUTH_CLIENT_SECRET: "b".repeat(32),
-    OAUTH_CLIENT_REDIRECT_URI: "https://claude.ai/CHANGEME",
-    OAUTH_STORE_PATH: path.join(vaultRoot, "oauth-store.json"),
-    WEBAUTHN_STORE_PATH: webauthnStorePath,
-  };
-
-  const app = createApp(config);
-  const server = app.listen(0);
-  await new Promise((resolve) => server.once("listening", resolve));
-  const port = (server.address() as AddressInfo).port;
-  const baseUrl = `http://127.0.0.1:${port}`;
-
-  try {
-    await fn(baseUrl, webauthnStorePath);
-  } finally {
-    await new Promise((resolve) => server.close(resolve));
-    await rm(vaultRoot, { recursive: true, force: true });
-  }
-}
-
 test("GET /webauthn/setup serves the registration page", async () => {
   await withTestServer(async (baseUrl) => {
     const res = await fetch(`${baseUrl}/webauthn/setup`);
@@ -187,11 +155,11 @@ test("POST /webauthn/authenticate/options returns 404 when no passkey is registe
 });
 
 test("GET /oauth/authorize only advertises the passkey option once one is registered", async () => {
-  await withTestServer(async (baseUrl, webauthnStorePath) => {
+  await withTestServer(async (baseUrl, config) => {
     const before = await fetch(`${baseUrl}/oauth/authorize?client_id=x&redirect_uri=https://claude.ai/CHANGEME&response_type=code`);
     assert.doesNotMatch(await before.text(), /passkey-btn/);
 
-    initWebAuthnStore(webauthnStorePath);
+    initWebAuthnStore(config.WEBAUTHN_STORE_PATH);
     setCredential(SAMPLE_CREDENTIAL);
 
     const after = await fetch(`${baseUrl}/oauth/authorize?client_id=x&redirect_uri=https://claude.ai/CHANGEME&response_type=code`);

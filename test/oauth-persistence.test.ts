@@ -4,10 +4,8 @@ import crypto from "node:crypto";
 import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { AddressInfo } from "node:net";
 import { loadState, saveState, type PersistedState } from "../src/oauth/persistence.js";
-import { createApp } from "../src/app.js";
-import type { Config } from "../src/config.js";
+import { base64url, withTestServer } from "./helpers.js";
 
 test("loadState returns an empty store when the file doesn't exist yet", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "oauth-persist-"));
@@ -37,33 +35,8 @@ test("saveState/loadState round-trips clients and tokens", async () => {
   }
 });
 
-function base64url(input: Buffer): string {
-  return input.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
 test("a completed OAuth flow writes the client and refresh token to the store file on disk", async () => {
-  const vaultRoot = await mkdtemp(path.join(tmpdir(), "oauth-persist-vault-"));
-  const storePath = path.join(vaultRoot, "oauth-store.json");
-  const config: Config = {
-    VAULT_PATH: vaultRoot,
-    TOKEN_INTERNAL: "a".repeat(32),
-    DOMAIN: "test.local",
-    PORT: 0,
-    OAUTH_PASSWORD: "correct-horse-battery-staple",
-    OAUTH_CLIENT_ID: "preregistered-client-persist",
-    OAUTH_CLIENT_SECRET: "b".repeat(32),
-    OAUTH_CLIENT_REDIRECT_URI: "https://claude.ai/CHANGEME",
-    OAUTH_STORE_PATH: storePath,
-    WEBAUTHN_STORE_PATH: path.join(vaultRoot, "webauthn-credential.json"),
-  };
-
-  const app = createApp(config);
-  const server = app.listen(0);
-  await new Promise((resolve) => server.once("listening", resolve));
-  const port = (server.address() as AddressInfo).port;
-  const baseUrl = `http://127.0.0.1:${port}`;
-
-  try {
+  await withTestServer(async (baseUrl, config) => {
     const registerRes = await fetch(`${baseUrl}/register`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -104,11 +77,8 @@ test("a completed OAuth flow writes the client and refresh token to the store fi
     const tokenBody = (await tokenRes.json()) as { refresh_token: string };
     assert.ok(tokenBody.refresh_token);
 
-    const onDisk = JSON.parse(await readFile(storePath, "utf-8")) as PersistedState;
+    const onDisk = JSON.parse(await readFile(config.OAUTH_STORE_PATH, "utf-8")) as PersistedState;
     assert.ok(onDisk.clients.some((c) => c.id === clientId));
     assert.ok(onDisk.refreshTokens.some((t) => t.token === tokenBody.refresh_token && t.clientId === clientId));
-  } finally {
-    await new Promise((resolve) => server.close(resolve));
-    await rm(vaultRoot, { recursive: true, force: true });
-  }
+  });
 });

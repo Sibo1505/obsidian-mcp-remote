@@ -1,41 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import path from "node:path";
-import type { AddressInfo } from "node:net";
-import { createApp } from "../src/app.js";
-import type { Config } from "../src/config.js";
-
-async function withTestServer(fn: (baseUrl: string) => Promise<void>, ntfyTopic?: string) {
-  const vaultRoot = await mkdtemp(path.join(tmpdir(), "rate-limit-vault-"));
-  const config: Config = {
-    VAULT_PATH: vaultRoot,
-    TOKEN_INTERNAL: "a".repeat(32),
-    DOMAIN: "test.local",
-    PORT: 0,
-    OAUTH_PASSWORD: "correct-horse-battery-staple",
-    OAUTH_CLIENT_ID: "preregistered-client",
-    OAUTH_CLIENT_SECRET: "b".repeat(32),
-    OAUTH_CLIENT_REDIRECT_URI: "https://claude.ai/CHANGEME",
-    OAUTH_STORE_PATH: path.join(vaultRoot, "oauth-store.json"),
-    WEBAUTHN_STORE_PATH: path.join(vaultRoot, "webauthn-credential.json"),
-    NTFY_TOPIC: ntfyTopic,
-  };
-
-  const app = createApp(config);
-  const server = app.listen(0);
-  await new Promise((resolve) => server.once("listening", resolve));
-  const port = (server.address() as AddressInfo).port;
-  const baseUrl = `http://127.0.0.1:${port}`;
-
-  try {
-    await fn(baseUrl);
-  } finally {
-    await new Promise((resolve) => server.close(resolve));
-    await rm(vaultRoot, { recursive: true, force: true });
-  }
-}
+import { withTestServer } from "./helpers.js";
 
 test("/oauth/authorize is rate-limited after repeated password guesses", async () => {
   await withTestServer(async (baseUrl) => {
@@ -103,7 +68,7 @@ test("a tripped rate limit sends an ntfy notification when NTFY_TOPIC is set", a
         });
       }
       assert.ok(calls.some((c) => c.url === "https://ntfy.sh/test-topic"));
-    }, "test-topic");
+    }, { NTFY_TOPIC: "test-topic" });
   } finally {
     restore();
   }
@@ -129,7 +94,7 @@ test("a wrong OAuth password sends an ntfy notification when NTFY_TOPIC is set",
       });
       assert.equal(calls.length, 1);
       assert.match(String(calls[0].body), /Wrong OAuth password attempt/);
-    }, "test-topic");
+    }, { NTFY_TOPIC: "test-topic" });
   } finally {
     restore();
   }
