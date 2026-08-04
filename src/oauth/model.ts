@@ -8,7 +8,14 @@ export interface StoredClient extends OAuth2Server.Client {
   grants: string[];
   clientSecret?: string;
   clientName?: string;
+  registeredAt?: string;
 }
+
+// SEC-004: /register is unauthenticated by design (RFC 7591), so without this the persisted store
+// would grow forever from DCR spam plus every expired token nobody ever cleaned up. A DCR client
+// that never completed a token exchange within 30 days is almost certainly abandoned (a real client
+// finishes the flow within minutes of registering) or was never legitimate to begin with.
+const CLIENT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 const clients = new Map<string, StoredClient>();
 const authorizationCodes = new Map<string, OAuth2Server.AuthorizationCode>();
@@ -38,6 +45,7 @@ function persist(): void {
       grants: c.grants,
       clientSecret: c.clientSecret,
       clientName: c.clientName,
+      registeredAt: c.registeredAt,
     })),
     accessTokens: [...accessTokens.values()].map((t) =>
       toPersistedToken(t.accessToken, t.accessTokenExpiresAt, t.scope, t.client, t.user),
@@ -52,17 +60,31 @@ function persist(): void {
  * Loads previously persisted clients/tokens back into memory and switches persist() on for
  * subsequent writes. Call once at startup, before any requests are served — without this the
  * store behaves exactly as before (in-memory only), which is what tests rely on.
+ *
+ * Also prunes on the way in (SEC-004): expired tokens are dropped rather than reloaded, and DCR
+ * clients older than CLIENT_RETENTION_MS with no surviving token are removed. The preregistered
+ * client (no registeredAt) is never touched by this.
  */
 export function initStore(filePath: string): void {
   const state = loadState(filePath);
   const user = { id: "owner" };
+  const now = Date.now();
+  let changed = false;
 
   for (const c of state.clients) {
     clients.set(c.id, { ...c });
   }
+
+  const referencedClientIds = new Set<string>();
+
   for (const t of state.accessTokens) {
+    if (t.expiresAt && new Date(t.expiresAt).getTime() < now) {
+      changed = true;
+      continue;
+    }
     const client = clients.get(t.clientId);
     if (!client) continue;
+    referencedClientIds.add(t.clientId);
     accessTokens.set(t.token, {
       accessToken: t.token,
       accessTokenExpiresAt: t.expiresAt ? new Date(t.expiresAt) : undefined,
@@ -72,8 +94,13 @@ export function initStore(filePath: string): void {
     });
   }
   for (const t of state.refreshTokens) {
+    if (t.expiresAt && new Date(t.expiresAt).getTime() < now) {
+      changed = true;
+      continue;
+    }
     const client = clients.get(t.clientId);
     if (!client) continue;
+    referencedClientIds.add(t.clientId);
     refreshTokens.set(t.token, {
       refreshToken: t.token,
       refreshTokenExpiresAt: t.expiresAt ? new Date(t.expiresAt) : undefined,
@@ -83,7 +110,16 @@ export function initStore(filePath: string): void {
     });
   }
 
+  for (const c of state.clients) {
+    if (!c.registeredAt) continue; // preregistered client — permanent
+    if (referencedClientIds.has(c.id)) continue; // has a live token
+    if (now - new Date(c.registeredAt).getTime() < CLIENT_RETENTION_MS) continue; // still fresh
+    clients.delete(c.id);
+    changed = true;
+  }
+
   storePath = filePath;
+  if (changed) persist();
 }
 
 export function registerClient(client: StoredClient): void {

@@ -7,6 +7,10 @@ export interface PersistedClient {
   grants: string[];
   clientSecret?: string;
   clientName?: string;
+  // Set only for clients created via DCR (register.ts). Absent for the preregistered client
+  // (registered directly in app.ts), which marks it as permanent/never auto-pruned — see
+  // CLIENT_RETENTION_MS in model.ts.
+  registeredAt?: string;
 }
 
 export interface PersistedToken {

@@ -110,6 +110,20 @@ one. Requires the real public HTTPS `DOMAIN`; won't work against a raw Tailscale
   know someone's probing the endpoint. Pick an unguessable topic name; treat it like a secret.
 - Dependabot is enabled on this repo (`.github/dependabot.yml`) for npm and Docker base image
   updates.
+- Dynamic Client Registration (`POST /register`) only accepts loopback redirect URIs
+  (`http://localhost|127.0.0.1`) — it's unauthenticated by design (RFC 7591), so accepting arbitrary
+  `https://` targets would let anyone self-register a client and phish your password/passkey via a
+  crafted `/oauth/authorize` link, with the authorization code landing on their own server.
+- Registered clients and issued tokens live in a plain JSON file (`OAUTH_STORE_PATH`), not
+  encrypted at rest. Accepted for this threat model — the host already holds `.env` in the clear —
+  but worth knowing if you ever back up or move that volume: treat it like any other secrets file.
+- `npm run oauth:list` / `npm run oauth:revoke -- <client_id>` inspect or remove a registered
+  client and its tokens directly in the store file — the only way to review or undo a consent
+  grant on a tool with no admin UI. Requires a container restart to take effect, since the running
+  server only reads this file once at startup. DCR clients that never complete a token exchange
+  within 30 days are pruned automatically on the next restart; the preregistered client never is.
+- Rate limiting is in-memory per process and resets on every container restart — acceptable for a
+  single-container deployment, but don't rely on it surviving a redeploy.
 
 ## Development
 

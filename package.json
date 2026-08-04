@@ -10,7 +10,9 @@
     "start": "node dist/server.js",
     "dev": "tsx watch src/server.ts",
     "setup": "node scripts/setup.mjs",
-    "test": "tsx --test test/fs.test.ts test/middleware.test.ts test/oauth-model.test.ts test/oauth-flow.test.ts test/rate-limit.test.ts test/oauth-persistence.test.ts test/notify.test.ts test/webauthn.test.ts"
+    "oauth:list": "node scripts/oauth-clients.mjs list",
+    "oauth:revoke": "node scripts/oauth-clients.mjs revoke",
+    "test": "tsx --test test/fs.test.ts test/middleware.test.ts test/oauth-model.test.ts test/oauth-flow.test.ts test/rate-limit.test.ts test/oauth-persistence.test.ts test/notify.test.ts test/webauthn.test.ts test/register.test.ts test/tools.test.ts test/discovery-and-security-headers.test.ts test/oauth-pruning.test.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
