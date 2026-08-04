@@ -32,7 +32,9 @@ export async function createRegistrationOptions(domain: string) {
     rpName: RP_NAME,
     rpID: domain,
     userName: "sebastian",
-    userDisplayName: "Sebastian",
+    // Shown to the user by their OS/password manager as the account label — kept generic since
+    // this codebase is meant for anyone to self-host, not just the original author.
+    userDisplayName: "Vault Owner",
     userID: USER_ID,
     attestationType: "none",
     // No authenticatorAttachment restriction: leaving it open is what makes Windows show its full
