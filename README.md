@@ -109,7 +109,8 @@ one. Requires the real public HTTPS `DOMAIN`; won't work against a raw Tailscale
   account needed) whenever the rate limiter trips or a login attempt fails — otherwise you won't
   know someone's probing the endpoint. Pick an unguessable topic name; treat it like a secret.
 - Dependabot is enabled on this repo (`.github/dependabot.yml`) for npm and Docker base image
-  updates.
+  updates. CodeQL (`.github/workflows/codeql.yml`) and gitleaks (`.github/workflows/gitleaks.yml`)
+  run on every push/PR plus a weekly schedule for CodeQL.
 - Dynamic Client Registration (`POST /register`) only accepts loopback redirect URIs
   (`http://localhost|127.0.0.1`) — it's unauthenticated by design (RFC 7591), so accepting arbitrary
   `https://` targets would let anyone self-register a client and phish your password/passkey via a

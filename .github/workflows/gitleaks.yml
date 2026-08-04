@@ -1,0 +1,22 @@
+name: gitleaks
+
+# Catches a secret (a real TOKEN_INTERNAL/OAUTH_PASSWORD/etc. instead of a placeholder) that made it
+# into a commit despite .env being gitignored - e.g. pasted directly into a script or test by
+# accident, the way a couple of test values were once pasted into chat during development.
+on:
+  push:
+  pull_request:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
