@@ -1,18 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { resolveInVault, readNote, writeNote, listDir, VaultPathError } from "../src/vault/fs.js";
-
-async function withTempVault(fn: (vaultRoot: string) => Promise<void>) {
-  const vaultRoot = await mkdtemp(path.join(tmpdir(), "vault-test-"));
-  try {
-    await fn(vaultRoot);
-  } finally {
-    await rm(vaultRoot, { recursive: true, force: true });
-  }
-}
+import { withTempVault } from "./helpers.js";
 
 test("resolveInVault accepts paths inside the vault", async () => {
   await withTempVault(async (vaultRoot) => {

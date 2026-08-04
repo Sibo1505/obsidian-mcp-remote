@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtemp, rm, mkdir } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { vaultRead } from "../src/tools/vault-read.js";
 import { vaultWrite } from "../src/tools/vault-write.js";
@@ -9,15 +8,7 @@ import { vaultPatch } from "../src/tools/vault-patch.js";
 import { vaultList } from "../src/tools/vault-list.js";
 import { searchQuery } from "../src/tools/search-query.js";
 import { writeNote } from "../src/vault/fs.js";
-
-async function withTempVault(fn: (vaultRoot: string) => Promise<void>) {
-  const vaultRoot = await mkdtemp(path.join(tmpdir(), "tools-vault-"));
-  try {
-    await fn(vaultRoot);
-  } finally {
-    await rm(vaultRoot, { recursive: true, force: true });
-  }
-}
+import { withTempVault } from "./helpers.js";
 
 // --- vault_write ---
 
@@ -25,7 +16,8 @@ test("vaultWrite creates a new file and reports it as written", async () => {
   await withTempVault(async (vaultRoot) => {
     const result = await vaultWrite(vaultRoot, { path: "note.md", content: "hello world" });
     assert.deepEqual(result, { path: "note.md", written: true });
-    assert.equal(await import("node:fs/promises").then((fs) => fs.readFile(path.join(vaultRoot, "note.md"), "utf-8")), "hello world");
+    const { content } = await vaultRead(vaultRoot, { path: "note.md" });
+    assert.equal(content, "hello world");
   });
 });
 

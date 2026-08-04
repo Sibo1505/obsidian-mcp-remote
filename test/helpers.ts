@@ -47,3 +47,13 @@ export async function withTestServer(
 export function base64url(input: Buffer): string {
   return input.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
+
+/** For tests that only need a scratch vault directory, not a running server (e.g. vault/fs.ts, tools/*). */
+export async function withTempVault(fn: (vaultRoot: string) => Promise<void>) {
+  const vaultRoot = await mkdtemp(path.join(tmpdir(), "vault-test-"));
+  try {
+    await fn(vaultRoot);
+  } finally {
+    await rm(vaultRoot, { recursive: true, force: true });
+  }
+}
