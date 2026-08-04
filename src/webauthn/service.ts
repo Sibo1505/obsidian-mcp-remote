@@ -32,6 +32,7 @@ export async function createRegistrationOptions(domain: string) {
     rpName: RP_NAME,
     rpID: domain,
     userName: "sebastian",
+    userDisplayName: "Sebastian",
     userID: USER_ID,
     attestationType: "none",
     // No authenticatorAttachment restriction: leaving it open is what makes Windows show its full
