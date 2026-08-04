@@ -1,3 +1,5 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import express from "express";
 import helmet from "helmet";
 import { rateLimit } from "express-rate-limit";
@@ -16,6 +18,17 @@ import { registerClient, initStore } from "./oauth/model.js";
 import { registerHandler } from "./oauth/register.js";
 import { authorizationServerMetadata, protectedResourceMetadata } from "./oauth/discovery.js";
 import { authorizeGet, authorizePost } from "./oauth/authorize-route.js";
+import { notifySecurityEvent } from "./notify.js";
+import { initWebAuthnStore } from "./webauthn/store.js";
+import { webauthnSetupGet, webauthnSetupOptions, webauthnSetupVerify, webauthnAuthenticateOptions } from "./webauthn/routes.js";
+
+// Repo root both in dev (tsx running src/app.ts) and in the Docker image (dist/app.js, "public"
+// copied alongside "dist" — see Dockerfile) — one level up from this file's own directory.
+const repoRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
+const publicDir = path.join(repoRoot, "public");
+// Vendored rather than pulled from a CDN: this JS runs on a login page that handles credentials —
+// a compromised CDN would mean a credential-stealing script served on our own domain.
+const webauthnBrowserBundle = path.join(repoRoot, "node_modules", "@simplewebauthn", "browser", "dist", "bundle", "index.umd.min.js");
 
 async function toResult(fn: () => Promise<unknown>): Promise<CallToolResult> {
   try {
@@ -65,6 +78,7 @@ export function createApp(config: Config): express.Express {
   // Reload clients/tokens that survived a previous process — without this, every container
   // restart wiped OAuth state and forced every client through the password login again.
   initStore(config.OAUTH_STORE_PATH);
+  initWebAuthnStore(config.WEBAUTHN_STORE_PATH);
 
   const oauthServer = createOAuthServer();
 
@@ -78,6 +92,14 @@ export function createApp(config: Config): express.Express {
     redirectUris: [config.OAUTH_CLIENT_REDIRECT_URI],
     grants: ["authorization_code", "refresh_token"],
   });
+
+  // Fires a best-effort push (if NTFY_TOPIC is set) and a generic 429.
+  function onRateLimited(label: string): express.RequestHandler {
+    return (req, res) => {
+      notifySecurityEvent(config.NTFY_TOPIC, `Rate limit hit on ${label} from ${req.ip}`);
+      res.status(429).json({ error: "Too many requests" });
+    };
+  }
 
   const mcpRateLimit = rateLimit({
     windowMs: 60_000,
@@ -93,6 +115,7 @@ export function createApp(config: Config): express.Express {
     limit: 10,
     standardHeaders: true,
     legacyHeaders: false,
+    handler: onRateLimited("/oauth/authorize"),
   });
 
   // /oauth/token is hit by legitimate clients on every refresh, but still needs a ceiling against
@@ -102,6 +125,7 @@ export function createApp(config: Config): express.Express {
     limit: 30,
     standardHeaders: true,
     legacyHeaders: false,
+    handler: onRateLimited("/oauth/token"),
   });
 
   // /register is unauthenticated by design (RFC 7591 DCR) — limit it to stop unbounded client
@@ -111,6 +135,7 @@ export function createApp(config: Config): express.Express {
     limit: 20,
     standardHeaders: true,
     legacyHeaders: false,
+    handler: onRateLimited("/register"),
   });
 
   const app = express();
@@ -124,6 +149,11 @@ export function createApp(config: Config): express.Express {
   // OAuth token requests (RFC 6749) and the HTML authorize form both use urlencoded bodies.
   app.use(express.urlencoded({ extended: true, limit: "1mb" }));
 
+  app.use(express.static(publicDir));
+  app.get("/webauthn-browser.js", (_req, res) => {
+    res.set("Content-Type", "application/javascript").sendFile(webauthnBrowserBundle);
+  });
+
   app.get("/health", (_req, res) => {
     res.status(200).json({ status: "ok" });
   });
@@ -132,8 +162,17 @@ export function createApp(config: Config): express.Express {
   app.get("/.well-known/oauth-protected-resource", protectedResourceMetadata);
   app.post("/register", registerRateLimit, registerHandler);
   app.get("/oauth/authorize", authorizeGet);
-  app.post("/oauth/authorize", authorizeRateLimit, authorizePost(oauthServer, config.OAUTH_PASSWORD));
+  app.post(
+    "/oauth/authorize",
+    authorizeRateLimit,
+    authorizePost(oauthServer, { oauthPassword: config.OAUTH_PASSWORD, domain: config.DOMAIN, ntfyTopic: config.NTFY_TOPIC }),
+  );
   app.post("/oauth/token", tokenRateLimit, oauthServer.token());
+
+  app.get("/webauthn/setup", webauthnSetupGet);
+  app.post("/webauthn/setup/options", authorizeRateLimit, webauthnSetupOptions(config.OAUTH_PASSWORD, config.DOMAIN));
+  app.post("/webauthn/setup/verify", authorizeRateLimit, webauthnSetupVerify(config.DOMAIN));
+  app.post("/webauthn/authenticate/options", authorizeRateLimit, webauthnAuthenticateOptions(config.DOMAIN));
 
   app.post("/mcp", mcpRateLimit, combinedAuth(config.TOKEN_INTERNAL, oauthServer), async (req, res) => {
     const server = new McpServer({ name: "obsidian-mcp-remote", version: "0.1.0" });

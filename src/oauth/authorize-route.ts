@@ -2,6 +2,8 @@ import type { Request, Response, NextFunction } from "express";
 import type ExpressOAuthServer from "@node-oauth/express-oauth-server";
 import { checkOAuthPassword, findClient } from "./model.js";
 import { renderAuthorizeForm } from "./authorize-view.js";
+import { notifySecurityEvent } from "../notify.js";
+import { hasPasskey, verifyAuthentication } from "../webauthn/service.js";
 
 const RESOURCE_OWNER = { id: "sebastian" };
 
@@ -13,15 +15,32 @@ function withClientName(params: Record<string, string>): Record<string, string> 
 }
 
 export function authorizeGet(req: Request, res: Response) {
-  res.set("Content-Type", "text/html").send(renderAuthorizeForm(withClientName(req.query as Record<string, string>)));
+  const params = withClientName(req.query as Record<string, string>);
+  res.set("Content-Type", "text/html").send(renderAuthorizeForm(params, { showPasskeyOption: hasPasskey() }));
 }
 
-export function authorizePost(oauthServer: ExpressOAuthServer, oauthPassword: string) {
+export interface AuthorizePostOptions {
+  oauthPassword: string;
+  domain: string;
+  ntfyTopic?: string;
+}
+
+export function authorizePost(oauthServer: ExpressOAuthServer, { oauthPassword, domain, ntfyTopic }: AuthorizePostOptions) {
   return async (req: Request, res: Response, next: NextFunction) => {
     const body = req.body as Record<string, string>;
 
-    if (!checkOAuthPassword(body.password ?? "", oauthPassword)) {
-      res.status(403).set("Content-Type", "text/html").send(renderAuthorizeForm(withClientName(body), "Falsches Passwort"));
+    const authenticated = body.webauthn_response
+      ? await verifyPasskeyResponse(body.webauthn_response, domain)
+      : checkOAuthPassword(body.password ?? "", oauthPassword);
+
+    if (!authenticated) {
+      notifySecurityEvent(
+        ntfyTopic,
+        body.webauthn_response ? `Failed passkey authentication attempt from ${req.ip}` : `Wrong OAuth password attempt from ${req.ip}`,
+      );
+      res.status(403).set("Content-Type", "text/html").send(
+        renderAuthorizeForm(withClientName(body), { errorMessage: "Anmeldung fehlgeschlagen", showPasskeyOption: hasPasskey() }),
+      );
       return;
     }
 
@@ -38,4 +57,12 @@ export function authorizePost(oauthServer: ExpressOAuthServer, oauthPassword: st
     });
     await authorize(req, res, next);
   };
+}
+
+async function verifyPasskeyResponse(raw: string, domain: string): Promise<boolean> {
+  try {
+    return await verifyAuthentication(domain, JSON.parse(raw));
+  } catch {
+    return false;
+  }
 }

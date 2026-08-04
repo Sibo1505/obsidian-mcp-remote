@@ -30,6 +30,7 @@ async function withTestServer(fn: (baseUrl: string, config: Config) => Promise<v
     OAUTH_CLIENT_SECRET: "b".repeat(32),
     OAUTH_CLIENT_REDIRECT_URI: "https://claude.ai/CHANGEME",
     OAUTH_STORE_PATH: path.join(vaultRoot, "oauth-store.json"),
+    WEBAUTHN_STORE_PATH: path.join(vaultRoot, "webauthn-credential.json"),
   };
 
   const app = createApp(config);

@@ -13,6 +13,8 @@ services:
       - OAUTH_CLIENT_SECRET=${OAUTH_CLIENT_SECRET}
       - OAUTH_CLIENT_REDIRECT_URI=${OAUTH_CLIENT_REDIRECT_URI}
       - OAUTH_STORE_PATH=/data/oauth-store.json
+      - WEBAUTHN_STORE_PATH=/data/webauthn-credential.json
+      - NTFY_TOPIC=${NTFY_TOPIC}
     ports:
       - "${TAILSCALE_IP}:${HOST_PORT}:3000"
     volumes:

@@ -54,6 +54,7 @@ test("a completed OAuth flow writes the client and refresh token to the store fi
     OAUTH_CLIENT_SECRET: "b".repeat(32),
     OAUTH_CLIENT_REDIRECT_URI: "https://claude.ai/CHANGEME",
     OAUTH_STORE_PATH: storePath,
+    WEBAUTHN_STORE_PATH: path.join(vaultRoot, "webauthn-credential.json"),
   };
 
   const app = createApp(config);

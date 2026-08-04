@@ -14,7 +14,8 @@ Exposes the same five tools as the local Obsidian MCP setup: `vault_read`, `vaul
 - Two auth zones, so you don't need OAuth just to use it from your own machine over Tailscale:
   - **Internal** (Tailscale network — Desktop-direct, Claude Code): a static bearer token.
   - **External** (public internet — Mobile/Web Custom Connectors): a real OAuth 2.0 server
-    (PKCE S256 required, Dynamic Client Registration, password-gated `/oauth/authorize`).
+    (PKCE S256 required, Dynamic Client Registration, `/oauth/authorize` gated by a passkey or
+    password).
 - Git is your rollback net: every write is a plain file write, revertable via `git revert` on the
   vault repo like any other change.
 
@@ -55,24 +56,41 @@ put a reverse proxy with a real TLS certificate in front of `HOST_PORT` (e.g. Ng
 }
 ```
 
-**Claude Desktop** (works over Tailscale too, via `mcp-remote` since Desktop doesn't speak
-Streamable HTTP directly):
+**Claude Desktop** (via `mcp-remote`, since Desktop doesn't speak Streamable HTTP directly):
 
 ```json
 {
   "mcpServers": {
     "obsidian": {
       "command": "npx",
-      "args": ["mcp-remote", "https://<DOMAIN>/mcp", "--header", "Authorization:Bearer <TOKEN_INTERNAL>"]
+      "args": ["mcp-remote@latest", "https://<DOMAIN>/mcp"]
     }
   }
 }
 ```
 
+`--header`-only auth doesn't work here: `mcp-remote` always runs its OAuth discovery flow
+regardless of flags, so Desktop goes through the external/OAuth zone (below), not `TOKEN_INTERNAL`.
+First connection opens a browser to `/oauth/authorize` — log in with a passkey (if registered) or
+the password. The issued refresh token keeps you logged in across restarts (see Passkey section).
+
 **claude.ai Custom Connector** (Mobile/Web, external zone): Settings → Connectors → Add custom
 connector → `https://<DOMAIN>/mcp`, with `OAUTH_CLIENT_ID`/`OAUTH_CLIENT_SECRET` from `.env` under
-Advanced settings. You'll be sent through the `/oauth/authorize` password screen once; after that
-the issued refresh token keeps you logged in.
+Advanced settings. Same `/oauth/authorize` login as Desktop above.
+
+## Passkey login (recommended)
+
+`/oauth/authorize` accepts a WebAuthn passkey (Windows Hello, a phone's fingerprint sensor, a
+hardware security key) instead of typing the password — not phishable the way a password is, and
+usually faster. Register one once:
+
+1. Visit `https://<DOMAIN>/webauthn/setup`.
+2. Enter `OAUTH_PASSWORD` to authorize the registration, then follow the browser's passkey prompt.
+3. From then on, `/oauth/authorize` shows a "Mit Passkey anmelden" button. The password field stays
+   as a fallback if the passkey device isn't available.
+
+Only one passkey is stored at a time (single-user tool) — registering a new one replaces the old
+one. Requires the real public HTTPS `DOMAIN`; won't work against a raw Tailscale IP or plain HTTP.
 
 ## Security notes
 
@@ -87,6 +105,11 @@ the issued refresh token keeps you logged in.
   understanding you'd be exposing the internal token to the public internet.
 - Read/write access means a leaked token lets someone read your whole vault, not just write to
   it. Git history protects against destructive edits, not against exfiltration.
+- Set `NTFY_TOPIC` in `.env` to get a push notification (via [ntfy.sh](https://ntfy.sh), no
+  account needed) whenever the rate limiter trips or a login attempt fails — otherwise you won't
+  know someone's probing the endpoint. Pick an unguessable topic name; treat it like a secret.
+- Dependabot is enabled on this repo (`.github/dependabot.yml`) for npm and Docker base image
+  updates.
 
 ## Development
 

@@ -25,25 +25,34 @@ export interface PersistedState {
 
 const EMPTY_STATE: PersistedState = { clients: [], accessTokens: [], refreshTokens: [] };
 
+/** Generic read used by both the OAuth store and the WebAuthn credential store below. */
+export function readJson<T>(filePath: string, fallback: T): T {
+  if (!existsSync(filePath)) return fallback;
+  try {
+    return JSON.parse(readFileSync(filePath, "utf-8")) as T;
+  } catch (error) {
+    console.error(`Failed to read ${filePath}, using fallback:`, error);
+    return fallback;
+  }
+}
+
+/** Write-to-temp-then-rename so a crash mid-write can't corrupt the file. */
+export function writeJsonAtomic<T>(filePath: string, data: T): void {
+  mkdirSync(path.dirname(filePath), { recursive: true });
+  const tmpPath = `${filePath}.${process.pid}.tmp`;
+  writeFileSync(tmpPath, JSON.stringify(data, null, 2), "utf-8");
+  renameSync(tmpPath, filePath);
+}
+
 /**
  * Survives container restarts: without this, every restart wiped the in-memory OAuth store and
  * forced every client through the full password login again. Auth codes stay in-memory only —
  * they're single-use and consumed within seconds of issuance, not worth persisting.
  */
 export function loadState(filePath: string): PersistedState {
-  if (!existsSync(filePath)) return EMPTY_STATE;
-  try {
-    return JSON.parse(readFileSync(filePath, "utf-8")) as PersistedState;
-  } catch (error) {
-    console.error(`Failed to read OAuth store at ${filePath}, starting empty:`, error);
-    return EMPTY_STATE;
-  }
+  return readJson(filePath, EMPTY_STATE);
 }
 
-/** Write-to-temp-then-rename so a crash mid-write can't corrupt the store. */
 export function saveState(filePath: string, state: PersistedState): void {
-  mkdirSync(path.dirname(filePath), { recursive: true });
-  const tmpPath = `${filePath}.${process.pid}.tmp`;
-  writeFileSync(tmpPath, JSON.stringify(state, null, 2), "utf-8");
-  renameSync(tmpPath, filePath);
+  writeJsonAtomic(filePath, state);
 }
