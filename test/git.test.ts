@@ -76,6 +76,27 @@ test("commitAndPush quarantines the write and resets to origin on a same-file co
   });
 });
 
+test("commitAndPush treats an unreachable remote as a plain sync failure, not a conflict", async () => {
+  await withGitFixture(async (vaultRoot) => {
+    await writeFile(path.join(vaultRoot, "note.md"), "hello");
+    await commitAndPush(vaultRoot, "note.md", "seed note");
+
+    // Breaks the fetch step of the later `pull --rebase` before any rebase can start - this must
+    // not be treated the same as a real same-file conflict (no rebase-apply/rebase-merge marker
+    // ever gets created, so there is nothing to `git rebase --abort`).
+    await gitIn(vaultRoot, ["remote", "set-url", "origin", "https://example.invalid/nonexistent.git"]);
+
+    await writeFile(path.join(vaultRoot, "note.md"), "changed while remote is unreachable");
+    const result = await commitAndPush(vaultRoot, "note.md", "network failure test");
+
+    assert.equal(result.synced, false);
+    assert.equal(result.conflict, undefined);
+
+    const log = await gitIn(vaultRoot, ["log", "--oneline", "-1"]);
+    assert.match(log.stdout, /network failure test/);
+  });
+});
+
 test("pullBestEffort never throws against a directory that isn't a git repo", async () => {
   await withTempVault(async (vaultRoot) => {
     await assert.doesNotReject(() => pullBestEffort(vaultRoot));

@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile, access } from "node:fs/promises";
 import path from "node:path";
 
 const execFileAsync = promisify(execFile);
@@ -53,6 +53,24 @@ async function currentBranch(vaultRoot: string): Promise<string> {
 }
 
 /**
+ * `git pull --rebase` fails for two very different reasons: a real same-file content conflict
+ * (git pauses mid-rebase, leaving one of these marker directories behind), or a fetch-level
+ * failure (network down, TLS/auth broken) that never got as far as starting a rebase at all. Only
+ * the first case has anything to abort or quarantine.
+ */
+async function isRebaseInProgress(vaultRoot: string): Promise<boolean> {
+  for (const marker of ["rebase-apply", "rebase-merge"]) {
+    try {
+      await access(path.join(vaultRoot, ".git", marker));
+      return true;
+    } catch {
+      // marker absent, keep checking the other one
+    }
+  }
+  return false;
+}
+
+/**
  * Saves the file's current (our-version) content under a sibling `*.claude-conflict.<ts>.md` path
  * so a rebase conflict never loses the write that triggered it, then resets the real path back to
  * origin's version. Keeping the branch clean (matching origin) is what stops one conflict from
@@ -102,7 +120,15 @@ export async function commitAndPush(vaultRoot: string, relativePath: string, mes
     try {
       await git(vaultRoot, ["pull", "--rebase"]);
     } catch (error) {
-      logGitError("pull --rebase (conflict)", error);
+      logGitError("pull --rebase", error);
+
+      if (!(await isRebaseInProgress(vaultRoot))) {
+        // Failed before a rebase ever started (network/TLS/auth) - nothing to abort or
+        // quarantine. Our commit is safe on disk, just not pushed yet; the next write's
+        // pre-write pull will retry.
+        return { synced: false };
+      }
+
       try {
         await git(vaultRoot, ["rebase", "--abort"]);
         const ourContent = await readFile(path.join(vaultRoot, relativePath), "utf-8");
