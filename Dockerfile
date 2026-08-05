@@ -19,6 +19,11 @@ RUN npm install --omit=dev
 COPY --from=build /app/dist ./dist
 COPY public ./public
 USER appuser
+# /vault is owned by the host's checkout user (debian), not appuser - git 2.35+ refuses to touch a
+# repo it doesn't own (CVE-2022-24765 hardening) unless explicitly told it's safe. Baked into the
+# image at build time (writes appuser's ~/.gitconfig) since the container's rootfs is read_only at
+# runtime and couldn't take a `git config --global` call there.
+RUN git config --global --add safe.directory /vault
 
 EXPOSE 3000
 CMD ["node", "dist/server.js"]
