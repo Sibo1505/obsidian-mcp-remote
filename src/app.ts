@@ -13,6 +13,7 @@ import { vaultWriteSchema, vaultWrite } from "./tools/vault-write.js";
 import { vaultPatchSchema, vaultPatch } from "./tools/vault-patch.js";
 import { vaultListSchema, vaultList } from "./tools/vault-list.js";
 import { searchQuerySchema, searchQuery } from "./tools/search-query.js";
+import { pullBestEffort, commitAndPush } from "./vault/git.js";
 import { createOAuthServer } from "./oauth/server.js";
 import { registerClient, initStore } from "./oauth/model.js";
 import { registerHandler } from "./oauth/register.js";
@@ -46,31 +47,53 @@ function registerTools(server: McpServer, config: Config) {
   server.registerTool(
     "vault_read",
     { description: "Read a vault file, optionally extracting a heading or frontmatter section.", inputSchema: vaultReadSchema },
-    (input) => toResult(() => vaultRead(config.VAULT_PATH, input)),
+    (input) =>
+      toResult(async () => {
+        await pullBestEffort(config.VAULT_PATH);
+        return vaultRead(config.VAULT_PATH, input);
+      }),
   );
 
   server.registerTool(
     "vault_write",
     { description: "Create or overwrite a vault file with the given content.", inputSchema: vaultWriteSchema },
-    (input) => toResult(() => vaultWrite(config.VAULT_PATH, input)),
+    (input) =>
+      toResult(async () => {
+        const result = await vaultWrite(config.VAULT_PATH, input);
+        const sync = await commitAndPush(config.VAULT_PATH, input.path, `vault_write: ${input.path}`);
+        return { ...result, ...sync };
+      }),
   );
 
   server.registerTool(
     "vault_patch",
     { description: "Patch a heading section or frontmatter field of a vault file.", inputSchema: vaultPatchSchema },
-    (input) => toResult(() => vaultPatch(config.VAULT_PATH, input)),
+    (input) =>
+      toResult(async () => {
+        const result = await vaultPatch(config.VAULT_PATH, input);
+        const sync = await commitAndPush(config.VAULT_PATH, input.path, `vault_patch: ${input.path}`);
+        return { ...result, ...sync };
+      }),
   );
 
   server.registerTool(
     "vault_list",
     { description: "List files and subdirectories inside a vault directory.", inputSchema: vaultListSchema },
-    (input) => toResult(() => vaultList(config.VAULT_PATH, input)),
+    (input) =>
+      toResult(async () => {
+        await pullBestEffort(config.VAULT_PATH);
+        return vaultList(config.VAULT_PATH, input);
+      }),
   );
 
   server.registerTool(
     "search_query",
     { description: "Search vault notes using a JsonLogic query evaluated against each note's metadata.", inputSchema: searchQuerySchema },
-    (input) => toResult(() => searchQuery(config.VAULT_PATH, input)),
+    (input) =>
+      toResult(async () => {
+        await pullBestEffort(config.VAULT_PATH);
+        return searchQuery(config.VAULT_PATH, input);
+      }),
   );
 }
 
