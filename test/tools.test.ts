@@ -316,3 +316,33 @@ test("searchQuery supports the custom glob operator against a note's path", asyn
     assert.equal(results[0].filename, "01-projects/foo.md");
   });
 });
+
+test("searchQuery supports the custom regexp operator for a legitimate pattern", async () => {
+  await withTempVault(async (vaultRoot) => {
+    await writeNote(vaultRoot, "a.md", "TODO: finish this");
+    await writeNote(vaultRoot, "b.md", "nothing pending here");
+    const results = await searchQuery(vaultRoot, { query: { regexp: ["^TODO", { var: "content" }] } });
+    assert.equal(results.length, 1);
+    assert.equal(results[0].filename, "a.md");
+  });
+});
+
+test("searchQuery's regexp operator rejects a catastrophic-backtracking pattern instead of hanging", async () => {
+  await withTempVault(async (vaultRoot) => {
+    await writeNote(vaultRoot, "a.md", "a".repeat(40) + "!");
+    const start = Date.now();
+    const results = await searchQuery(vaultRoot, { query: { regexp: ["(a+)+$", { var: "content" }] } });
+    // The whole point of the fix: this must return near-instantly (rejected, not evaluated)
+    // rather than actually running the regex against the crafted input.
+    assert.ok(Date.now() - start < 1000);
+    assert.equal(results.length, 0);
+  });
+});
+
+test("searchQuery's regexp operator rejects an overly long pattern", async () => {
+  await withTempVault(async (vaultRoot) => {
+    await writeNote(vaultRoot, "a.md", "x".repeat(300));
+    const results = await searchQuery(vaultRoot, { query: { regexp: ["x".repeat(250), { var: "content" }] } });
+    assert.equal(results.length, 0);
+  });
+});

@@ -3,6 +3,7 @@ import fg from "fast-glob";
 import matter from "gray-matter";
 import jsonLogic from "json-logic-js";
 import { Minimatch } from "minimatch";
+import safeRegex from "safe-regex";
 import { readNote, statNote } from "./fs.js";
 
 export interface NoteJson {
@@ -85,7 +86,19 @@ jsonLogic.add_operation("glob", (pattern: string, value: string) => {
   return new Minimatch(pattern, { nocase: true }).match(value ?? "");
 });
 
+// `pattern` comes straight from an MCP tool call, evaluated against arbitrary-length note
+// content - an unbounded, user-supplied regex against attacker-influenceable input is a classic
+// ReDoS: a catastrophic-backtracking pattern (e.g. "(a+)+$") can block Node's single-threaded
+// event loop for every caller, not just the one that sent it. safe-regex statically rejects
+// patterns whose worst-case backtracking is unbounded, rather than trying to bound the danger
+// with a length cap (exponential blowup makes even a few dozen characters of input enough to hang
+// indefinitely, so truncating the input doesn't actually help).
+const MAX_REGEXP_PATTERN_LENGTH = 200;
+
 jsonLogic.add_operation("regexp", (pattern: string, value: string) => {
+  if (typeof pattern !== "string" || pattern.length > MAX_REGEXP_PATTERN_LENGTH || !safeRegex(pattern)) {
+    return false;
+  }
   return new RegExp(pattern).test(value ?? "");
 });
 

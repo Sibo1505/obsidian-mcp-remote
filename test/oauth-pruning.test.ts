@@ -6,9 +6,9 @@ import path from "node:path";
 import { initStore, findClient } from "../src/oauth/model.js";
 import { saveState, type PersistedState } from "../src/oauth/persistence.js";
 
-// SEC-004: /register is unauthenticated, so the store must not grow forever. initStore() prunes on
-// load — these tests exercise that directly against a hand-built store file rather than going
-// through a full register->authorize->token cycle for every case.
+// SEC-004: DCR (/register) has since been removed entirely, but initStore()'s pruning stays as
+// general hygiene for any client record with a registeredAt timestamp - these tests exercise it
+// directly against a hand-built store file rather than needing a live registration path.
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 

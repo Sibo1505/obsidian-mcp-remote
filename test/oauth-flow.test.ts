@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import crypto from "node:crypto";
 import { base64url, withTestServer } from "./helpers.js";
+import { registerClient } from "../src/oauth/model.js";
 
 function makePkcePair() {
   const verifier = base64url(crypto.randomBytes(32));
@@ -9,17 +10,8 @@ function makePkcePair() {
   return { verifier, challenge };
 }
 
-test("full OAuth flow: register -> authorize -> token -> authenticated /mcp call", async () => {
-  await withTestServer(async (baseUrl) => {
-    const registerRes = await fetch(`${baseUrl}/register`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ redirect_uris: ["http://127.0.0.1:9999/callback"] }),
-    });
-    assert.equal(registerRes.status, 201);
-    const { client_id: clientId } = (await registerRes.json()) as { client_id: string };
-    assert.ok(clientId);
-
+test("full OAuth flow: authorize -> token -> authenticated /mcp call (preregistered client)", async () => {
+  await withTestServer(async (baseUrl, config) => {
     const { verifier, challenge } = makePkcePair();
 
     const authorizeRes = await fetch(`${baseUrl}/oauth/authorize`, {
@@ -28,8 +20,8 @@ test("full OAuth flow: register -> authorize -> token -> authenticated /mcp call
       redirect: "manual",
       body: new URLSearchParams({
         password: "correct-horse-battery-staple",
-        client_id: clientId,
-        redirect_uri: "http://127.0.0.1:9999/callback",
+        client_id: config.OAUTH_CLIENT_ID,
+        redirect_uri: config.OAUTH_CLIENT_REDIRECT_URI,
         response_type: "code",
         state: "xyz",
         code_challenge: challenge,
@@ -48,8 +40,9 @@ test("full OAuth flow: register -> authorize -> token -> authenticated /mcp call
       body: new URLSearchParams({
         grant_type: "authorization_code",
         code: code!,
-        redirect_uri: "http://127.0.0.1:9999/callback",
-        client_id: clientId,
+        redirect_uri: config.OAUTH_CLIENT_REDIRECT_URI,
+        client_id: config.OAUTH_CLIENT_ID,
+        client_secret: config.OAUTH_CLIENT_SECRET,
         code_verifier: verifier,
       }),
     });
@@ -74,13 +67,7 @@ test("full OAuth flow: register -> authorize -> token -> authenticated /mcp call
 });
 
 test("wrong PKCE code_verifier is rejected at the token endpoint", async () => {
-  await withTestServer(async (baseUrl) => {
-    const registerRes = await fetch(`${baseUrl}/register`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ redirect_uris: ["http://127.0.0.1:9999/callback"] }),
-    });
-    const { client_id: clientId } = (await registerRes.json()) as { client_id: string };
+  await withTestServer(async (baseUrl, config) => {
     const { challenge } = makePkcePair();
 
     const authorizeRes = await fetch(`${baseUrl}/oauth/authorize`, {
@@ -89,8 +76,8 @@ test("wrong PKCE code_verifier is rejected at the token endpoint", async () => {
       redirect: "manual",
       body: new URLSearchParams({
         password: "correct-horse-battery-staple",
-        client_id: clientId,
-        redirect_uri: "http://127.0.0.1:9999/callback",
+        client_id: config.OAUTH_CLIENT_ID,
+        redirect_uri: config.OAUTH_CLIENT_REDIRECT_URI,
         response_type: "code",
         state: "xyz",
         code_challenge: challenge,
@@ -105,8 +92,9 @@ test("wrong PKCE code_verifier is rejected at the token endpoint", async () => {
       body: new URLSearchParams({
         grant_type: "authorization_code",
         code: code!,
-        redirect_uri: "http://127.0.0.1:9999/callback",
-        client_id: clientId,
+        redirect_uri: config.OAUTH_CLIENT_REDIRECT_URI,
+        client_id: config.OAUTH_CLIENT_ID,
+        client_secret: config.OAUTH_CLIENT_SECRET,
         code_verifier: "this-is-not-the-right-verifier",
       }),
     });
@@ -115,13 +103,7 @@ test("wrong PKCE code_verifier is rejected at the token endpoint", async () => {
 });
 
 test("wrong password at /oauth/authorize is rejected", async () => {
-  await withTestServer(async (baseUrl) => {
-    const registerRes = await fetch(`${baseUrl}/register`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ redirect_uris: ["http://127.0.0.1:9999/callback"] }),
-    });
-    const { client_id: clientId } = (await registerRes.json()) as { client_id: string };
+  await withTestServer(async (baseUrl, config) => {
     const { challenge } = makePkcePair();
 
     const authorizeRes = await fetch(`${baseUrl}/oauth/authorize`, {
@@ -130,8 +112,8 @@ test("wrong password at /oauth/authorize is rejected", async () => {
       redirect: "manual",
       body: new URLSearchParams({
         password: "totally-wrong-password",
-        client_id: clientId,
-        redirect_uri: "http://127.0.0.1:9999/callback",
+        client_id: config.OAUTH_CLIENT_ID,
+        redirect_uri: config.OAUTH_CLIENT_REDIRECT_URI,
         response_type: "code",
         state: "xyz",
         code_challenge: challenge,
@@ -142,7 +124,30 @@ test("wrong password at /oauth/authorize is rejected", async () => {
   });
 });
 
-test("/mcp still accepts the static TOKEN_INTERNAL bearer alongside OAuth", async () => {
+// trust proxy is set to 1 hop, so the test's direct (loopback) connection is trusted as that one
+// hop and an X-Forwarded-For header is honored - this simulates what a genuine Tailscale-origin
+// request looks like (a real Tailscale peer IP, as NPM/the direct Tailscale-bound port would
+// actually report it), without needing a real Tailscale network in the test.
+test("/mcp accepts the static TOKEN_INTERNAL bearer from a Tailscale-range address", async () => {
+  await withTestServer(async (baseUrl, config) => {
+    const res = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+        Authorization: `Bearer ${config.TOKEN_INTERNAL}`,
+        "X-Forwarded-For": "100.95.229.27",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+    });
+    assert.equal(res.status, 200);
+  });
+});
+
+// The two-zone model is worthless if TOKEN_INTERNAL works from anywhere the moment it leaks - this
+// is the regression test for that fix. No X-Forwarded-For here falls back to the raw (non-Tailscale)
+// loopback test-connection address, standing in for a real public-internet request.
+test("/mcp rejects the correct TOKEN_INTERNAL bearer from a non-Tailscale address", async () => {
   await withTestServer(async (baseUrl, config) => {
     const res = await fetch(`${baseUrl}/mcp`, {
       method: "POST",
@@ -153,7 +158,7 @@ test("/mcp still accepts the static TOKEN_INTERNAL bearer alongside OAuth", asyn
       },
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
     });
-    assert.equal(res.status, 200);
+    assert.equal(res.status, 401);
   });
 });
 
@@ -170,15 +175,13 @@ test("/mcp rejects requests with no valid credential at all", async () => {
 
 test("consent screen shows the registered client_name instead of the raw client_id", async () => {
   await withTestServer(async (baseUrl) => {
-    const registerRes = await fetch(`${baseUrl}/register`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        redirect_uris: ["http://127.0.0.1:9999/callback"],
-        client_name: "My Test MCP Client",
-      }),
+    const clientId = "named-test-client";
+    registerClient({
+      id: clientId,
+      redirectUris: ["http://127.0.0.1:9999/callback"],
+      grants: ["authorization_code"],
+      clientName: "My Test MCP Client",
     });
-    const { client_id: clientId } = (await registerRes.json()) as { client_id: string };
 
     const formRes = await fetch(`${baseUrl}/oauth/authorize?client_id=${clientId}&redirect_uri=http://127.0.0.1:9999/callback&response_type=code`);
     const html = await formRes.text();
@@ -187,13 +190,7 @@ test("consent screen shows the registered client_name instead of the raw client_
 });
 
 test("refresh grant rotates the refresh token: old one stops working, new one differs", async () => {
-  await withTestServer(async (baseUrl) => {
-    const registerRes = await fetch(`${baseUrl}/register`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ redirect_uris: ["http://127.0.0.1:9999/callback"] }),
-    });
-    const { client_id: clientId } = (await registerRes.json()) as { client_id: string };
+  await withTestServer(async (baseUrl, config) => {
     const { verifier, challenge } = makePkcePair();
 
     const authorizeRes = await fetch(`${baseUrl}/oauth/authorize`, {
@@ -202,8 +199,8 @@ test("refresh grant rotates the refresh token: old one stops working, new one di
       redirect: "manual",
       body: new URLSearchParams({
         password: "correct-horse-battery-staple",
-        client_id: clientId,
-        redirect_uri: "http://127.0.0.1:9999/callback",
+        client_id: config.OAUTH_CLIENT_ID,
+        redirect_uri: config.OAUTH_CLIENT_REDIRECT_URI,
         response_type: "code",
         state: "xyz",
         code_challenge: challenge,
@@ -218,8 +215,9 @@ test("refresh grant rotates the refresh token: old one stops working, new one di
       body: new URLSearchParams({
         grant_type: "authorization_code",
         code: code!,
-        redirect_uri: "http://127.0.0.1:9999/callback",
-        client_id: clientId,
+        redirect_uri: config.OAUTH_CLIENT_REDIRECT_URI,
+        client_id: config.OAUTH_CLIENT_ID,
+        client_secret: config.OAUTH_CLIENT_SECRET,
         code_verifier: verifier,
       }),
     });
@@ -231,7 +229,8 @@ test("refresh grant rotates the refresh token: old one stops working, new one di
       body: new URLSearchParams({
         grant_type: "refresh_token",
         refresh_token: firstTokens.refresh_token,
-        client_id: clientId,
+        client_id: config.OAUTH_CLIENT_ID,
+        client_secret: config.OAUTH_CLIENT_SECRET,
       }),
     });
     assert.equal(refreshRes.status, 200);
@@ -244,7 +243,8 @@ test("refresh grant rotates the refresh token: old one stops working, new one di
       body: new URLSearchParams({
         grant_type: "refresh_token",
         refresh_token: firstTokens.refresh_token,
-        client_id: clientId,
+        client_id: config.OAUTH_CLIENT_ID,
+        client_secret: config.OAUTH_CLIENT_SECRET,
       }),
     });
     assert.equal(reuseRes.status, 400);
@@ -253,12 +253,12 @@ test("refresh grant rotates the refresh token: old one stops working, new one di
 
 test("consent screen falls back to the raw client_id when no client_name was registered", async () => {
   await withTestServer(async (baseUrl) => {
-    const registerRes = await fetch(`${baseUrl}/register`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ redirect_uris: ["http://127.0.0.1:9999/callback"] }),
+    const clientId = "unnamed-test-client";
+    registerClient({
+      id: clientId,
+      redirectUris: ["http://127.0.0.1:9999/callback"],
+      grants: ["authorization_code"],
     });
-    const { client_id: clientId } = (await registerRes.json()) as { client_id: string };
 
     const formRes = await fetch(`${baseUrl}/oauth/authorize?client_id=${clientId}&redirect_uri=http://127.0.0.1:9999/callback&response_type=code`);
     const html = await formRes.text();

@@ -37,13 +37,6 @@ test("saveState/loadState round-trips clients and tokens", async () => {
 
 test("a completed OAuth flow writes the client and refresh token to the store file on disk", async () => {
   await withTestServer(async (baseUrl, config) => {
-    const registerRes = await fetch(`${baseUrl}/register`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ redirect_uris: ["http://127.0.0.1:9999/persist-callback"] }),
-    });
-    const { client_id: clientId } = (await registerRes.json()) as { client_id: string };
-
     const verifier = base64url(crypto.randomBytes(32));
     const challenge = base64url(crypto.createHash("sha256").update(verifier).digest());
 
@@ -53,8 +46,8 @@ test("a completed OAuth flow writes the client and refresh token to the store fi
       redirect: "manual",
       body: new URLSearchParams({
         password: "correct-horse-battery-staple",
-        client_id: clientId,
-        redirect_uri: "http://127.0.0.1:9999/persist-callback",
+        client_id: config.OAUTH_CLIENT_ID,
+        redirect_uri: config.OAUTH_CLIENT_REDIRECT_URI,
         response_type: "code",
         state: "xyz",
         code_challenge: challenge,
@@ -69,8 +62,9 @@ test("a completed OAuth flow writes the client and refresh token to the store fi
       body: new URLSearchParams({
         grant_type: "authorization_code",
         code: code!,
-        redirect_uri: "http://127.0.0.1:9999/persist-callback",
-        client_id: clientId,
+        redirect_uri: config.OAUTH_CLIENT_REDIRECT_URI,
+        client_id: config.OAUTH_CLIENT_ID,
+        client_secret: config.OAUTH_CLIENT_SECRET,
         code_verifier: verifier,
       }),
     });
@@ -78,7 +72,7 @@ test("a completed OAuth flow writes the client and refresh token to the store fi
     assert.ok(tokenBody.refresh_token);
 
     const onDisk = JSON.parse(await readFile(config.OAUTH_STORE_PATH, "utf-8")) as PersistedState;
-    assert.ok(onDisk.clients.some((c) => c.id === clientId));
-    assert.ok(onDisk.refreshTokens.some((t) => t.token === tokenBody.refresh_token && t.clientId === clientId));
+    assert.ok(onDisk.clients.some((c) => c.id === config.OAUTH_CLIENT_ID));
+    assert.ok(onDisk.refreshTokens.some((t) => t.token === tokenBody.refresh_token && t.clientId === config.OAUTH_CLIENT_ID));
   });
 });

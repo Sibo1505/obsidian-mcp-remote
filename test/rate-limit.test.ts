@@ -26,14 +26,19 @@ test("/oauth/authorize is rate-limited after repeated password guesses", async (
   });
 });
 
-test("/register is rate-limited after repeated registrations", async () => {
+test("/oauth/token is rate-limited after repeated requests", async () => {
   await withTestServer(async (baseUrl) => {
     let lastStatus = 0;
-    for (let i = 0; i < 21; i++) {
-      const res = await fetch(`${baseUrl}/register`, {
+    for (let i = 0; i < 31; i++) {
+      const res = await fetch(`${baseUrl}/oauth/token`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ redirect_uris: [`http://127.0.0.1:9999/callback-${i}`] }),
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "authorization_code",
+          code: `bogus-${i}`,
+          redirect_uri: "https://claude.ai/CHANGEME",
+          client_id: "preregistered-client",
+        }),
       });
       lastStatus = res.status;
     }
@@ -60,11 +65,16 @@ test("a tripped rate limit sends an ntfy notification when NTFY_TOPIC is set", a
   const { calls, restore } = interceptNtfyCalls();
   try {
     await withTestServer(async (baseUrl) => {
-      for (let i = 0; i < 21; i++) {
-        await fetch(`${baseUrl}/register`, {
+      for (let i = 0; i < 31; i++) {
+        await fetch(`${baseUrl}/oauth/token`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ redirect_uris: [`http://127.0.0.1:9999/callback-${i}`] }),
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({
+            grant_type: "authorization_code",
+            code: `bogus-${i}`,
+            redirect_uri: "https://claude.ai/CHANGEME",
+            client_id: "preregistered-client",
+          }),
         });
       }
       assert.ok(calls.some((c) => c.url === "https://ntfy.sh/test-topic"));

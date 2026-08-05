@@ -34,6 +34,15 @@ test("resolveInVault rejects a sibling directory that shares a name prefix", asy
   });
 });
 
+test("resolveInVault blocks .git and .obsidian even though they stay inside the vault root", async () => {
+  await withTempVault(async (vaultRoot) => {
+    assert.throws(() => resolveInVault(vaultRoot, ".git/config"), VaultPathError);
+    assert.throws(() => resolveInVault(vaultRoot, ".git/hooks/post-commit"), VaultPathError);
+    assert.throws(() => resolveInVault(vaultRoot, "sub/.git/config"), VaultPathError);
+    assert.throws(() => resolveInVault(vaultRoot, ".obsidian/plugins/x/data.json"), VaultPathError);
+  });
+});
+
 test("readNote/writeNote round-trip and refuse traversal", async () => {
   await withTempVault(async (vaultRoot) => {
     await writeNote(vaultRoot, "sub/note.md", "hello");

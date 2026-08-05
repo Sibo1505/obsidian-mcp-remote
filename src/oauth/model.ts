@@ -11,10 +11,9 @@ export interface StoredClient extends OAuth2Server.Client {
   registeredAt?: string;
 }
 
-// SEC-004: /register is unauthenticated by design (RFC 7591), so without this the persisted store
-// would grow forever from DCR spam plus every expired token nobody ever cleaned up. A DCR client
-// that never completed a token exchange within 30 days is almost certainly abandoned (a real client
-// finishes the flow within minutes of registering) or was never legitimate to begin with.
+// SEC-004: originally guarded against DCR (/register) spam; that endpoint has since been removed
+// entirely, but this pruning stays as general hygiene against expired tokens and any abandoned
+// client record with a registeredAt timestamp piling up unbounded.
 const CLIENT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 const clients = new Map<string, StoredClient>();

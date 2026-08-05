@@ -16,7 +16,6 @@ import { searchQuerySchema, searchQuery } from "./tools/search-query.js";
 import { pullBestEffort, commitAndPush } from "./vault/git.js";
 import { createOAuthServer } from "./oauth/server.js";
 import { registerClient, initStore } from "./oauth/model.js";
-import { registerHandler } from "./oauth/register.js";
 import { authorizationServerMetadata, protectedResourceMetadata } from "./oauth/discovery.js";
 import { authorizeGet, authorizePost } from "./oauth/authorize-route.js";
 import { notifySecurityEvent } from "./notify.js";
@@ -151,16 +150,6 @@ export function createApp(config: Config): express.Express {
     handler: onRateLimited("/oauth/token"),
   });
 
-  // /register is unauthenticated by design (RFC 7591 DCR) — limit it to stop unbounded client
-  // registration from filling up the in-memory client store.
-  const registerRateLimit = rateLimit({
-    windowMs: 60 * 60_000,
-    limit: 20,
-    standardHeaders: true,
-    legacyHeaders: false,
-    handler: onRateLimited("/register"),
-  });
-
   const app = express();
   // Trust exactly one reverse-proxy hop (NPM, same npm_shared network) so req.protocol reflects
   // the real client-facing scheme (https) via X-Forwarded-Proto, instead of the plain-HTTP hop
@@ -207,7 +196,6 @@ export function createApp(config: Config): express.Express {
 
   app.get("/.well-known/oauth-authorization-server", authorizationServerMetadata);
   app.get("/.well-known/oauth-protected-resource", protectedResourceMetadata);
-  app.post("/register", registerRateLimit, registerHandler);
 
   const authorizePostHandler = authorizePost(oauthServer, {
     oauthPassword: config.OAUTH_PASSWORD,
