@@ -27,17 +27,6 @@ function withGitLock<T>(fn: () => Promise<T>): Promise<T> {
   return result;
 }
 
-/** Best-effort freshness pull before a read. Never throws — a stale-but-working read beats a broken one. */
-export async function pullBestEffort(vaultRoot: string): Promise<void> {
-  await withGitLock(async () => {
-    try {
-      await git(vaultRoot, ["pull"]);
-    } catch (error) {
-      logGitError("pull (best-effort)", error);
-    }
-  });
-}
-
 async function hasStagedChanges(vaultRoot: string): Promise<boolean> {
   try {
     await git(vaultRoot, ["diff", "--cached", "--quiet", "--exit-code"]);
@@ -71,6 +60,32 @@ async function isRebaseInProgress(vaultRoot: string): Promise<boolean> {
 }
 
 /**
+ * Best-effort freshness pull before a read. Never throws — a stale-but-working read beats a
+ * broken one. Uses `--rebase` explicitly rather than plain `pull`: this repo has no configured
+ * merge/rebase default, and git refuses to guess ("Need to specify how to reconcile divergent
+ * branches") the moment origin has diverged at all. The working tree is always clean at this
+ * point (reads never write), so there's nothing to autostash. If a stray rebase is somehow left
+ * in progress (e.g. a previous write's own rebase got interrupted), aborts it rather than leaving
+ * every subsequent git call blocked on it — reads have nothing of their own to quarantine.
+ */
+export async function pullBestEffort(vaultRoot: string): Promise<void> {
+  await withGitLock(async () => {
+    try {
+      await git(vaultRoot, ["pull", "--rebase"]);
+    } catch (error) {
+      logGitError("pull --rebase (best-effort)", error);
+      if (await isRebaseInProgress(vaultRoot)) {
+        try {
+          await git(vaultRoot, ["rebase", "--abort"]);
+        } catch (abortError) {
+          logGitError("rebase --abort (best-effort)", abortError);
+        }
+      }
+    }
+  });
+}
+
+/**
  * Saves the file's current (our-version) content under a sibling `*.claude-conflict.<ts>.md` path
  * so a rebase conflict never loses the write that triggered it, then resets the real path back to
  * origin's version. Keeping the branch clean (matching origin) is what stops one conflict from
@@ -101,12 +116,6 @@ export interface SyncResult {
 export async function commitAndPush(vaultRoot: string, relativePath: string, message: string): Promise<SyncResult> {
   return withGitLock(async () => {
     try {
-      await git(vaultRoot, ["pull"]);
-    } catch (error) {
-      logGitError("pull (pre-write)", error);
-    }
-
-    try {
       await git(vaultRoot, ["add", "--", relativePath]);
       if (!(await hasStagedChanges(vaultRoot))) {
         return { synced: true };
@@ -124,8 +133,8 @@ export async function commitAndPush(vaultRoot: string, relativePath: string, mes
 
       if (!(await isRebaseInProgress(vaultRoot))) {
         // Failed before a rebase ever started (network/TLS/auth) - nothing to abort or
-        // quarantine. Our commit is safe on disk, just not pushed yet; the next write's
-        // pre-write pull will retry.
+        // quarantine. Our commit is safe on disk, just not pushed yet; the next write's own
+        // pull --rebase step will retry.
         return { synced: false };
       }
 
