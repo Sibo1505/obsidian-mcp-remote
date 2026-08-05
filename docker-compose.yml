@@ -31,17 +31,15 @@ services:
     tmpfs:
       - /tmp
     networks:
-      - mcp_net
+      - npm_shared
 
-# Deliberately NOT npm_shared: that network also holds Gitea, AFFiNE, n8n, Homarr, Filebrowser,
-# Dockge, etc. This is the one container in that whole stack reachable from the public internet -
-# membership in npm_shared would let it reach every other internal service directly over Docker's
-# own DNS, completely bypassing the Tailscale-only NPM Access Lists protecting them (those only
-# apply to traffic actually routed through NPM, not container-to-container traffic on a shared
-# network). mcp_net is scoped to exactly what this container needs to reach (Gitea) and be reached
-# by (NPM, for the public obsidian-mcp.* domain) - see [[obsidian-mcp-remote]] SEC-011.
+# REVERTED 2026-08-06 (attempted a scoped mcp_net network for least-privilege isolation from the
+# rest of npm_shared - see SEC-011 in [[obsidian-mcp-remote]] - but Gitea's and NPM's existing
+# proxy configs route to each other via a hardcoded host IP (hairpin NAT), which broke site-wide
+# once those containers became multi-homed. Reverted to the known-stable single-network setup;
+# revisit with a Tailscale-sidecar approach instead (no Docker network topology changes needed).
 networks:
-  mcp_net:
+  npm_shared:
     external: true
 
 volumes:
