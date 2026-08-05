@@ -151,8 +151,9 @@ export function createApp(config: Config): express.Express {
   });
 
   const app = express();
-  // Trust exactly one reverse-proxy hop (NPM, same npm_shared network) so req.protocol reflects
-  // the real client-facing scheme (https) via X-Forwarded-Proto, instead of the plain-HTTP hop
+  // Trust exactly one reverse-proxy hop (NPM, reachable via the scoped mcp_net network — see
+  // docker-compose.yml) so req.protocol reflects the real client-facing scheme (https) via
+  // X-Forwarded-Proto, instead of the plain-HTTP hop
   // NPM makes internally to this container. Without this, discovery metadata below advertises
   // "http://" even when reached over HTTPS, which real OAuth clients correctly reject as a mismatch.
   app.set("trust proxy", 1);
