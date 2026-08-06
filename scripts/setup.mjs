@@ -28,7 +28,7 @@ const GENERATORS = {
 
 // Everything else in .env.example is host-specific (paths, IPs, domain) — a script can't
 // meaningfully generate those, so they're left as the documented placeholders for manual editing.
-const STILL_TO_FILL_IN = ["VAULT_PATH", "TAILSCALE_IP", "HOST_PORT", "DOMAIN", "OAUTH_CLIENT_REDIRECT_URI"];
+const STILL_TO_FILL_IN = ["VAULT_PATH", "TS_AUTHKEY", "DOMAIN", "OAUTH_CLIENT_REDIRECT_URI"];
 
 let output = readFileSync(envExamplePath, "utf-8");
 for (const [key, generate] of Object.entries(GENERATORS)) {
@@ -42,5 +42,6 @@ for (const key of STILL_TO_FILL_IN) {
   console.log(`  - ${key}`);
 }
 console.log("\nThen:");
-console.log("  1. docker compose up -d --build");
-console.log('  2. curl http://<TAILSCALE_IP>:<HOST_PORT>/health   ->  {"status":"ok"}');
+console.log("  1. docker compose up -d tailscale   (wait for it to report healthy, then find its tailnet IP)");
+console.log("  2. docker compose up -d --build");
+console.log('  3. curl http://<tailscale-sidecar-ip>:3000/health   ->  {"status":"ok"}');

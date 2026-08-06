@@ -28,17 +28,21 @@ Requirements: Docker, a domain (only needed for the external/OAuth zone), a Tail
 git clone <this-repo> obsidian-mcp-remote
 cd obsidian-mcp-remote
 npm run setup        # generates .env with strong random secrets
-# edit .env: fill in VAULT_PATH, TAILSCALE_IP, HOST_PORT, DOMAIN, OAUTH_CLIENT_REDIRECT_URI
+# edit .env: fill in VAULT_PATH, TS_AUTHKEY, DOMAIN, OAUTH_CLIENT_REDIRECT_URI
+docker compose up -d tailscale   # wait for it to report healthy, then note its tailnet IP
 docker compose up -d --build
-curl http://<TAILSCALE_IP>:<HOST_PORT>/health   # -> {"status":"ok"}
+curl http://<tailscale-sidecar-ip>:3000/health   # -> {"status":"ok"}
 ```
 
 `npm run setup` never overwrites an existing `.env` — pass `--force` if you deliberately want to
 rotate every generated secret.
 
-For the external/OAuth zone to be reachable from claude.ai (Mobile/Web) or over plain internet,
-put a reverse proxy with a real TLS certificate in front of `HOST_PORT` (e.g. Nginx Proxy Manager
-+ Let's Encrypt) and point `DOMAIN` at it. The internal/Tailscale zone works without any of that.
+This container runs its own Tailscale sidecar (see `docker-compose.yml`) rather than joining a
+host's existing Docker network — keeps it from reaching (or being reached by) anything else on a
+shared reverse-proxy network. For the external/OAuth zone to be reachable from claude.ai
+(Mobile/Web) or over plain internet, put a reverse proxy with a real TLS certificate in front of
+the sidecar's tailnet IP (e.g. Nginx Proxy Manager + Let's Encrypt) and point `DOMAIN` at it. The
+internal/Tailscale zone works without any of that.
 
 ## Connecting a client
 
@@ -49,7 +53,7 @@ put a reverse proxy with a real TLS certificate in front of `HOST_PORT` (e.g. Ng
   "mcpServers": {
     "obsidian": {
       "type": "http",
-      "url": "http://<TAILSCALE_IP>:<HOST_PORT>/mcp",
+      "url": "http://<tailscale-sidecar-ip>:3000/mcp",
       "headers": { "Authorization": "Bearer <TOKEN_INTERNAL from .env>" }
     }
   }
@@ -100,9 +104,10 @@ one. Requires the real public HTTPS `DOMAIN`; won't work against a raw Tailscale
 - The OAuth password (`OAUTH_PASSWORD`) is the only gate on the public `/oauth/authorize`
   endpoint — rate-limited, but still a single factor. Use a long random value (the setup script
   generates one; don't replace it with something memorable).
-- `TOKEN_INTERNAL` is scoped to the Tailscale network by the `docker-compose.yml` port binding
-  (`${TAILSCALE_IP}:${HOST_PORT}:3000`, never `0.0.0.0`) — don't change that binding without
-  understanding you'd be exposing the internal token to the public internet.
+- `TOKEN_INTERNAL` is scoped to the Tailscale network twice over: the container only has a tailnet
+  IP in the first place (via the `tailscale` sidecar in `docker-compose.yml`, never `0.0.0.0`), and
+  `combinedAuth` independently checks the request's source IP against Tailscale's CGNAT range
+  before honoring the token — a leaked token still can't be used from the public internet.
 - Read/write access means a leaked token lets someone read your whole vault, not just write to
   it. Git history protects against destructive edits, not against exfiltration.
 - Set `NTFY_TOPIC` in `.env` to get a push notification (via [ntfy.sh](https://ntfy.sh), no
