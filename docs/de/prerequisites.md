@@ -30,6 +30,7 @@ Reihenfolge spielt keine Rolle, aber alle vier sollten stehen bevor du zur
 | **Tailscale** (empfohlen) | Sicherer interner Zugriff (Desktop/Code) ohne öffentliche Exposition, und der Server bekommt später seine eigene Identität im Tailnet | [tailscale.com/download](https://tailscale.com/download) — Account erstellen, auf dem VPS `tailscale up` |
 | **Ein Reverse Proxy mit TLS** (nur nötig für Mobile/Web) | Terminiert HTTPS, leitet auf den Server weiter | Siehe [Reverse-Proxy einrichten](reverse-proxy.md) — Software jetzt installieren, den eigentlichen Proxy Host erst während der Installation konfigurieren |
 | **Git** auf dem VPS-Host | Nicht zwingend nötig (der Server macht Git-Operationen im Container), aber praktisch zum Debuggen | Meist schon vorinstalliert (`git --version` prüfen) |
+| **Node.js 20+** auf dem VPS-Host (nur für `npm run wizard`/`verify`/`setup`) | Der Server selbst läuft komplett containerisiert und braucht nie Node auf dem Host — aber das Setup-Tooling aus [Installation](installation.md) Weg A/C schon, da es reine `.mjs`-Skripte sind, die direkt laufen, nicht im Docker-Container. Überspringbar, wenn du nur Weg B (den `/onboard`-Claude-Code-Skill) nutzt oder die `.env` von Hand schreibst. | [nodejs.org](https://nodejs.org/en/download) oder der Paketmanager deiner Distribution |
 
 **Wenn du einen komplett cleanen VPS hast:** Fang mit Docker an (`curl -fsSL
 https://get.docker.com | sh`), dann Tailscale, dann optional den Reverse Proxy. Kein Gitea nötig,
