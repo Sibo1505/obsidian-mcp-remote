@@ -15,10 +15,14 @@ Fragt dich interaktiv durch: Vault (Git-Remote klonen oder Pfad angeben), Tailsc
 ob du öffentlichen Zugriff willst, generiert alle Secrets automatisch, schreibt die `.env` und
 bietet an, die Container direkt zu starten und zu prüfen. Kein manuelles `.env`-Editieren nötig.
 
-> Ein Claude-Code-Skill für die komplett KI-geführte Installation (für "ich hab wirklich keine
-> Ahnung, mach das für mich") ist in Arbeit und ergänzt das bald um einen dritten Weg.
+## Weg B — Komplett KI-geführt (für "ich hab wirklich keine Ahnung, mach das für mich")
 
-## Weg B — Manuell
+Wenn du [Claude Code](https://claude.com/claude-code) nutzt: Repo klonen, Claude Code im Ordner
+öffnen, `/onboard` eingeben. Führt dich durch alle vier Phasen (Vorbereitung, Installation,
+Kontrolle, Client-Verbindung), erklärt jeden Schritt, und übernimmt so viel wie möglich selbst —
+je nachdem, ob du Claude Code direkten Terminal-Zugriff auf deinen VPS gibst oder nicht.
+
+## Weg C — Manuell
 
 ```bash
 git clone <this-repo> obsidian-mcp-remote
