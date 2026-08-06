@@ -10,11 +10,13 @@ may have little or no Docker/Tailscale experience — that's the whole point of 
 instead of just pointing them at the docs. Explain what you're doing and why at each step, not
 just the raw commands.
 
-Read `docs/prerequisites.md`, `docs/installation.md`, `docs/verification.md`, and
-`docs/client-setup.md` in this repo first if you haven't already this session — they're the
-canonical source of truth for every step below. This skill is a guided wrapper around them, not a
-replacement; if anything here and those docs disagree, the docs win (they may have been updated
-since this skill was written).
+Docs exist in both `docs/en/` and `docs/de/` — use whichever matches the language the user is
+writing in (default to `docs/en/` if unclear). Read that language's `prerequisites.md`,
+`installation.md`, `verification.md`, and `client-setup.md` first if you haven't already this
+session — they're the canonical source of truth for every step below. This skill is a guided
+wrapper around them, not a replacement; if anything here and those docs disagree, the docs win
+(they may have been updated since this skill was written). The rest of this file refers to the
+English filenames for brevity; substitute the German ones if that's the language in use.
 
 ## Ground rules
 
@@ -33,7 +35,7 @@ since this skill was written).
 ## Phase 1 — Prerequisites
 
 Ask what they already have running on their VPS (clean box vs. already hosting other things).
-Walk through `docs/prerequisites.md`'s checklist conversationally: Docker, a git remote for their
+Walk through `docs/en/prerequisites.md`'s checklist conversationally: Docker, a git remote for their
 vault (Gitea/GitHub/GitLab — help them figure out which if they're unsure), Tailscale, and
 optionally a reverse proxy with TLS if they want Mobile/Web access. Don't move to Phase 2 until
 Docker and Tailscale are confirmed working (`docker --version`, `tailscale status`).
@@ -48,7 +50,7 @@ Two ways to actually do this, pick based on what you have access to:
   (`scripts/install-wizard.mjs`) if you want to know exactly what it's doing before running it.
 - **If you're only exchanging commands/output with them** (no direct shell access to their VPS):
   walk them through `npm run wizard` themselves, one prompt at a time, explaining each question as
-  it comes up. Don't just paste the whole command sequence from `docs/installation.md`'s manual
+  it comes up. Don't just paste the whole command sequence from `docs/en/installation.md`'s manual
   path unless they explicitly prefer that over the interactive wizard.
 
 Either way, the redirect URI for the Custom Connector (`OAUTH_CLIENT_REDIRECT_URI`) can't be filled
@@ -76,16 +78,16 @@ Don't proceed to Phase 4 until all five checks pass.
 ## Phase 4 — Client setup
 
 Ask which clients they actually want (Claude Code, Desktop, Mobile/Web Custom Connector — they
-don't need all three). Walk through `docs/client-setup.md` for whichever they pick. For the
+don't need all three). Walk through `docs/en/client-setup.md` for whichever they pick. For the
 Custom Connector specifically: they need to start adding it in claude.ai *first* to see the exact
 redirect URI it expects, put that into `OAUTH_CLIENT_REDIRECT_URI` in `.env`, then
 `docker compose up -d --build` to pick up the change, *then* finish adding the connector.
 
-Mention the [Passkey login](../../../docs/client-setup.md) setup as a strong recommendation once at
+Mention the [Passkey login](../../../docs/en/client-setup.md) setup as a strong recommendation once at
 least one client is connected — it's a five-minute step that removes the password as a phishing
 target.
 
 ## Done
 
-Point them at `docs/security.md` for ongoing operational hygiene (secret rotation, `NTFY_TOPIC`
+Point them at `docs/en/security.md` for ongoing operational hygiene (secret rotation, `NTFY_TOPIC`
 for alerts, what the accepted-risk items mean) — not required to finish, but worth reading once.

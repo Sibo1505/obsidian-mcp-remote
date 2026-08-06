@@ -1,40 +1,42 @@
+🇩🇪 [Deutsche Version hier](docs/de/README.md)
+
 # obsidian-mcp-remote
 
-Ein remote [MCP](https://modelcontextprotocol.io)-Server, der Claude (Desktop, Code, oder ein
-Custom Connector auf Mobile/Web) Lese-/Schreibzugriff auf einen selbst gehosteten Obsidian-Vault
-gibt — kein laufendes Obsidian nötig, kein Local-REST-API-Plugin, funktioniert von jedem Gerät aus.
+A remote [MCP](https://modelcontextprotocol.io) server that gives Claude (Desktop, Code, or a
+Custom Connector on Mobile/Web) read/write access to a self-hosted Obsidian vault — no need to
+keep Obsidian running, no Local REST API plugin, works from any device.
 
 ## Features
 
-- Fünf Vault-Tools (`vault_read`, `vault_write`, `vault_patch`, `vault_list`, `search_query`) —
-  drop-in-kompatibel zum lokalen Obsidian-MCP-Setup
-- Zwei-Zonen-Auth: einfacher Bearer-Token über dein eigenes Tailscale-Netz, echtes OAuth 2.0
-  (PKCE, Passkey-Login) für Zugriff von überall
-- Jede Änderung landet in Git — voll revertierbar, keine Blackbox
-- Eigene Netzwerk-Identität (Tailscale-Sidecar) statt geteiltem Docker-Netz mit anderen Diensten
-- Push-Benachrichtigungen bei verdächtigen Login-Versuchen
-- CI-Security-Scanning (CodeQL, gitleaks, Dependabot) von Anfang an aktiv
+- Five vault tools (`vault_read`, `vault_write`, `vault_patch`, `vault_list`, `search_query`) —
+  drop-in compatible with the local Obsidian MCP setup
+- Two-zone auth: a simple bearer token over your own Tailscale network, real OAuth 2.0 (PKCE,
+  passkey login) for access from anywhere
+- Every change lands in Git — fully revertible, no black box
+- Its own network identity (Tailscale sidecar) instead of a Docker network shared with other
+  services
+- Push notifications on suspicious login attempts
+- CI security scanning (CodeQL, gitleaks, Dependabot) active from day one
 
-Details dazu: [Wie der Server funktioniert](docs/how-it-works.md).
+Details: [How the server works](docs/en/how-it-works.md).
 
-## Los geht's
+## Getting started
 
-Reihenfolge einhalten — jeder Schritt baut auf dem vorherigen auf:
+Follow the order — each step builds on the previous one:
 
-1. [Voraussetzungen & Vorbereitung](docs/prerequisites.md) — was du brauchst, was du vorher
-   selbst installierst
-2. [Installation](docs/installation.md) — den Server aufsetzen
-3. [Kontrolle](docs/verification.md) — prüfen, dass alles läuft
-4. [Client-Verbindung](docs/client-setup.md) — Claude Desktop/Code/Mobile anbinden
+1. [Prerequisites & Preparation](docs/en/prerequisites.md) — what you need, what to install
+   yourself beforehand
+2. [Installation](docs/en/installation.md) — set up the server
+3. [Verification](docs/en/verification.md) — confirm everything's running
+4. [Client setup](docs/en/client-setup.md) — connect Claude Desktop/Code/Mobile
 
-Danach lohnt sich ein Blick in die [Sicherheitshinweise](docs/security.md) für den laufenden
-Betrieb.
+After that, it's worth reading the [security notes](docs/en/security.md) for ongoing operation.
 
 ## Development
 
 ```bash
 npm install
-npm test    # node:test, kein externer Test-Runner
+npm test    # node:test, no external test runner
 npm run build
 ```
 

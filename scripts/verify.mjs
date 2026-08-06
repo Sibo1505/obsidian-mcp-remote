@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Automates the manual checks from docs/verification.md — run after installation to confirm
+// Automates the manual checks from docs/de/verification.md (or docs/en/verification.md) — run after installation to confirm
 // the containers are healthy, the server responds, OAuth discovery is correct (if DOMAIN is set),
 // vault sync works, and the logs look clean. Exits non-zero if any check fails, so it's usable in
 // scripts too, but the output is written for a human reading it directly.
@@ -104,10 +104,10 @@ async function main() {
   const passed = results.filter(Boolean).length;
   console.log(`\n${passed}/${results.length} Checks bestanden.`);
   if (passed < results.length) {
-    console.log("Details je Check in docs/verification.md.");
+    console.log("Details je Check in docs/de/verification.md.");
     process.exit(1);
   }
-  console.log("Weiter mit docs/client-setup.md.");
+  console.log("Weiter mit docs/de/client-setup.md.");
 }
 
 main();

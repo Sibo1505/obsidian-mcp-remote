@@ -43,7 +43,7 @@ async function run(cmd, args, opts = {}) {
 async function main() {
   console.log("obsidian-mcp-remote — geführtes Setup\n");
   console.log("Setzt voraus, dass Docker und (empfohlen) Tailscale auf diesem Rechner schon");
-  console.log("installiert sind — siehe docs/prerequisites.md falls noch nicht.\n");
+  console.log("installiert sind — siehe docs/de/prerequisites.md falls noch nicht.\n");
 
   if (existsSync(envPath)) {
     const overwrite = await askYesNo(
@@ -110,7 +110,7 @@ async function main() {
   let domain = "obsidian-mcp.example.com";
   if (wantsPublic) {
     console.log("\nBraucht einen Reverse Proxy mit TLS vor der Tailscale-IP des Servers — siehe");
-    console.log("docs/prerequisites.md, falls der noch nicht steht.");
+    console.log("docs/de/prerequisites.md, falls der noch nicht steht.");
     domain = await ask("Deine Domain (z.B. obsidian-mcp.deine-domain.dev)", { defaultValue: domain });
   } else {
     console.log("Übersprungen — DOMAIN bleibt ein Platzhalter, du kannst das jederzeit nachtragen.");
@@ -148,7 +148,7 @@ async function main() {
   writeFileSync(envPath, output, "utf-8");
   console.log(`✓ ${envPath} geschrieben.`);
   console.log("  OAUTH_CLIENT_REDIRECT_URI bleibt offen — die trägst du erst beim Einrichten des");
-  console.log("  Custom Connectors in claude.ai ein (siehe docs/client-setup.md).");
+  console.log("  Custom Connectors in claude.ai ein (siehe docs/de/client-setup.md).");
 
   // --- Optionally start ---
   const startNow = await askYesNo("\nContainer jetzt starten?");
@@ -169,7 +169,7 @@ async function main() {
         if (appUp.ok) {
           console.log("✓ Server gestartet.");
           const health = await run("curl", ["-sf", `http://${ip.stdout}:3000/health`]);
-          console.log(health.ok ? `✓ Health-Check: ${health.stdout}` : "⚠ Health-Check noch nicht erreichbar — kurz warten und docs/verification.md durchgehen.");
+          console.log(health.ok ? `✓ Health-Check: ${health.stdout}` : "⚠ Health-Check noch nicht erreichbar — kurz warten und docs/de/verification.md durchgehen.");
         } else {
           console.log(`✗ Serverstart fehlgeschlagen: ${appUp.error.message}`);
         }
@@ -179,10 +179,10 @@ async function main() {
       }
     }
   } else {
-    console.log("\nÜbersprungen. Manuell starten laut docs/installation.md.");
+    console.log("\nÜbersprungen. Manuell starten laut docs/de/installation.md.");
   }
 
-  console.log("\nWeiter mit docs/verification.md, dann docs/client-setup.md.");
+  console.log("\nWeiter mit docs/de/verification.md, dann docs/de/client-setup.md.");
   rl.close();
 }
 
