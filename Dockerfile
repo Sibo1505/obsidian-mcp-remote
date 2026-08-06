@@ -1,4 +1,4 @@
-FROM node:20-slim AS build
+FROM node:25-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm install
@@ -6,7 +6,7 @@ COPY tsconfig.json ./
 COPY src ./src
 RUN npm run build
 
-FROM node:20-slim
+FROM node:25-slim
 WORKDIR /app
 ENV NODE_ENV=production
 # vault/git.ts shells out to the git CLI at runtime (commit+push after writes, JIT pull before
