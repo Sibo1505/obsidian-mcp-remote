@@ -202,7 +202,7 @@ export function createApp(config: Config): express.Express {
     domain: config.DOMAIN,
     ntfyTopic: config.NTFY_TOPIC,
   });
-  app.get("/oauth/authorize", authorizeGet);
+  app.get("/oauth/authorize", authorizeRateLimit, authorizeGet);
   app.post("/oauth/authorize", authorizeRateLimit, authorizePostHandler);
   app.post("/oauth/token", tokenRateLimit, oauthServer.token());
 
@@ -210,7 +210,7 @@ export function createApp(config: Config): express.Express {
   // correctly advertises /oauth/authorize + /oauth/token, and mcp-remote (Desktop/Code) follows it
   // correctly — but claude.ai's Custom Connector flow was observed hitting /authorize directly,
   // ignoring discovery. Same handlers, just reachable at both paths.
-  app.get("/authorize", authorizeGet);
+  app.get("/authorize", authorizeRateLimit, authorizeGet);
   app.post("/authorize", authorizeRateLimit, authorizePostHandler);
   app.post("/token", tokenRateLimit, oauthServer.token());
 
