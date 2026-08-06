@@ -1,7 +1,12 @@
 # Kontrolle
 
-> Ein `npm run verify`-Skript, das die folgenden Checks automatisch durchführt und klar
-> zusammenfasst, ist in Arbeit. Bis dahin: die Checks manuell, in dieser Reihenfolge.
+```bash
+npm run verify
+```
+
+Führt die fünf Checks unten automatisch aus und fasst am Ende zusammen, wie viele bestanden haben
+— nicht bestandene zeigen direkt eine kurze Fehlerursache. Alternativ manuell, Schritt für
+Schritt:
 
 ## 1. Container laufen
 
