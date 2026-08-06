@@ -4,7 +4,8 @@
 
   function setStatus(text, isError) {
     statusEl.textContent = text;
-    statusEl.style.color = isError ? "#c00" : "#555";
+    statusEl.classList.toggle("text-danger", isError);
+    statusEl.classList.toggle("text-ink-muted", !isError);
   }
 
   if (!window.SimpleWebAuthnBrowser || !SimpleWebAuthnBrowser.browserSupportsWebAuthn()) {

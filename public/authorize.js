@@ -21,7 +21,8 @@ document.getElementById("toggle-password").addEventListener("click", function ()
 
   btn.addEventListener("click", async function () {
     btn.disabled = true;
-    statusEl.style.color = "#555";
+    statusEl.classList.remove("text-danger");
+    statusEl.classList.add("text-ink-muted");
     statusEl.textContent = "Warte auf Passkey...";
     try {
       var optionsRes = await fetch("/webauthn/authenticate/options", { method: "POST" });
@@ -31,7 +32,8 @@ document.getElementById("toggle-password").addEventListener("click", function ()
       document.getElementById("webauthn_response").value = JSON.stringify(assertion);
       document.getElementById("authorize-form").submit();
     } catch (err) {
-      statusEl.style.color = "#c00";
+      statusEl.classList.remove("text-ink-muted");
+      statusEl.classList.add("text-danger");
       statusEl.textContent = "Passkey fehlgeschlagen: " + err.message;
       btn.disabled = false;
     }
