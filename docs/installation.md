@@ -1,12 +1,24 @@
 # Installation
 
-Setzt voraus, dass [Voraussetzungen & Vorbereitung](prerequisites.md) erledigt sind.
+Setzt voraus, dass [Voraussetzungen & Vorbereitung](prerequisites.md) erledigt sind. Zwei Wege,
+wähl was zu dir passt:
 
-> Ein geführter Installer (`npm run install`) und ein Claude-Code-Skill für die KI-geführte
-> Installation sind in Arbeit und ergänzen diese Seite bald um einen zweiten, einfacheren Weg.
-> Bis dahin: der manuelle Weg unten, Schritt für Schritt.
+## Weg A — Geführter Wizard (empfohlen bei wenig Docker-Erfahrung)
 
-## Manueller Weg
+```bash
+git clone <this-repo> obsidian-mcp-remote
+cd obsidian-mcp-remote
+npm run wizard
+```
+
+Fragt dich interaktiv durch: Vault (Git-Remote klonen oder Pfad angeben), Tailscale Auth Key,
+ob du öffentlichen Zugriff willst, generiert alle Secrets automatisch, schreibt die `.env` und
+bietet an, die Container direkt zu starten und zu prüfen. Kein manuelles `.env`-Editieren nötig.
+
+> Ein Claude-Code-Skill für die komplett KI-geführte Installation (für "ich hab wirklich keine
+> Ahnung, mach das für mich") ist in Arbeit und ergänzt das bald um einen dritten Weg.
+
+## Weg B — Manuell
 
 ```bash
 git clone <this-repo> obsidian-mcp-remote
