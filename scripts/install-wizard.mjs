@@ -110,7 +110,7 @@ async function main() {
   let domain = "obsidian-mcp.example.com";
   if (wantsPublic) {
     console.log("\nBraucht einen Reverse Proxy mit TLS vor der Tailscale-IP des Servers — siehe");
-    console.log("docs/de/prerequisites.md, falls der noch nicht steht.");
+    console.log("docs/de/reverse-proxy.md, falls der noch nicht steht.");
     domain = await ask("Deine Domain (z.B. obsidian-mcp.deine-domain.dev)", { defaultValue: domain });
   } else {
     console.log("Übersprungen — DOMAIN bleibt ein Platzhalter, du kannst das jederzeit nachtragen.");

@@ -62,9 +62,9 @@ curl http://<tailscale-sidecar-ip>:3000/health   # -> {"status":"ok"}
 Gerät öffnen → "Disable key expiry" — sonst verliert der Container nach ein paar Monaten
 unbemerkt die Verbindung, weil eine unbeaufsichtigte Neu-Authentifizierung nicht möglich ist.
 
-**Für Mobile/Web-Zugriff** zusätzlich: einen Reverse Proxy mit TLS-Zertifikat vor die Tailscale-IP
-des Sidecars stellen (Forward-Ziel: `<tailscale-sidecar-ip>:3000`) und `DOMAIN` in `.env` darauf
-zeigen lassen. Ohne das funktioniert nur die interne Zone (Desktop/Code über Tailscale).
+**Für Mobile/Web-Zugriff** zusätzlich: siehe [Reverse-Proxy einrichten](reverse-proxy.md) — die
+Tailscale-IP des Sidecars von oben ist genau das Forward-Ziel, das dort gebraucht wird. Ohne
+Reverse Proxy funktioniert nur die interne Zone (Desktop/Code über Tailscale).
 
 ---
 Weiter mit der [Kontrolle](verification.md).

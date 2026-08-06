@@ -28,7 +28,7 @@ because you're already hosting other things there), just skip what's already the
 |---|---|---|
 | **Docker + Docker Compose** | The server itself runs as a container | [docs.docker.com/engine/install](https://docs.docker.com/engine/install/) |
 | **Tailscale** (recommended) | Secure internal access (Desktop/Code) without public exposure, and the server later gets its own identity on the tailnet | [tailscale.com/download](https://tailscale.com/download) — create an account, run `tailscale up` on the VPS |
-| **A reverse proxy with TLS** (only needed for Mobile/Web) | Terminates HTTPS, forwards to the server | Tested with [Nginx Proxy Manager](https://nginxproxymanager.com/) + Let's Encrypt — any reverse proxy with TLS support works in principle |
+| **A reverse proxy with TLS** (only needed for Mobile/Web) | Terminates HTTPS, forwards to the server | See [Reverse proxy setup](reverse-proxy.md) — install the software now, configure the actual proxy host during Installation |
 | **Git** on the VPS host | Not strictly required (the server does its git operations inside the container), but handy for debugging | Usually already installed (`git --version` to check) |
 
 **Starting from a clean VPS:** Start with Docker (`curl -fsSL https://get.docker.com | sh`), then

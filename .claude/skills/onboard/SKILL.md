@@ -12,11 +12,12 @@ just the raw commands.
 
 Docs exist in both `docs/en/` and `docs/de/` — use whichever matches the language the user is
 writing in (default to `docs/en/` if unclear). Read that language's `prerequisites.md`,
-`installation.md`, `verification.md`, and `client-setup.md` first if you haven't already this
-session — they're the canonical source of truth for every step below. This skill is a guided
-wrapper around them, not a replacement; if anything here and those docs disagree, the docs win
-(they may have been updated since this skill was written). The rest of this file refers to the
-English filenames for brevity; substitute the German ones if that's the language in use.
+`installation.md`, `verification.md`, `client-setup.md`, and (if they want Mobile/Web access)
+`reverse-proxy.md` first if you haven't already this session — they're the canonical source of
+truth for every step below. This skill is a guided wrapper around them, not a replacement; if
+anything here and those docs disagree, the docs win (they may have been updated since this skill
+was written). The rest of this file refers to the English filenames for brevity; substitute the
+German ones if that's the language in use.
 
 ## Ground rules
 
@@ -37,8 +38,10 @@ English filenames for brevity; substitute the German ones if that's the language
 Ask what they already have running on their VPS (clean box vs. already hosting other things).
 Walk through `docs/en/prerequisites.md`'s checklist conversationally: Docker, a git remote for their
 vault (Gitea/GitHub/GitLab — help them figure out which if they're unsure), Tailscale, and
-optionally a reverse proxy with TLS if they want Mobile/Web access. Don't move to Phase 2 until
-Docker and Tailscale are confirmed working (`docker --version`, `tailscale status`).
+optionally a reverse proxy with TLS if they want Mobile/Web access (install the software now per
+`docs/en/reverse-proxy.md`, but the actual proxy host can't be configured until Phase 2 gives you
+the sidecar's Tailscale IP). Don't move to Phase 2 until Docker and Tailscale are confirmed
+working (`docker --version`, `tailscale status`).
 
 ## Phase 2 — Installation
 

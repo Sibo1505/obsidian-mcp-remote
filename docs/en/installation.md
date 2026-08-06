@@ -61,9 +61,9 @@ curl http://<tailscale-sidecar-ip>:3000/health   # -> {"status":"ok"}
 "Disable key expiry" — otherwise the container silently loses its connection after a few months,
 since an unattended re-authentication isn't possible.
 
-**For Mobile/Web access** additionally: put a reverse proxy with a TLS certificate in front of the
-sidecar's Tailscale IP (forward target: `<tailscale-sidecar-ip>:3000`) and point `DOMAIN` in
-`.env` at it. Without that, only the internal zone (Desktop/Code over Tailscale) works.
+**For Mobile/Web access** additionally: see [Reverse proxy setup](reverse-proxy.md) — the sidecar's
+Tailscale IP from above is exactly the forward target it asks for. Without a reverse proxy, only
+the internal zone (Desktop/Code over Tailscale) works.
 
 ---
 Continue with [Verification](verification.md).
