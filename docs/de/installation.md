@@ -55,8 +55,13 @@ auth key → Reusable **aus**, Ephemeral **aus** → Wert kopieren, in `TS_AUTHK
 docker compose up -d tailscale   # warten bis "healthy", dann die Tailscale-IP notieren:
 docker exec obsidian-mcp-remote-tailscale tailscale ip -4
 docker compose up -d --build
+docker exec -u root obsidian-mcp-remote chown -R appuser:appuser /vault
 curl http://<tailscale-sidecar-ip>:3000/health   # -> {"status":"ok"}
 ```
+
+Der `chown`-Schritt ist nötig, weil der frisch geklonte Vault-Checkout dem Host-User gehört (z.B.
+`debian`), nicht `appuser` (uid 999), als der der Container läuft — ohne ihn scheitern MCP-Writes
+mit `EACCES`. `npm run wizard` und `npm run verify` machen das automatisch.
 
 **Schlüssel-Ablauf deaktivieren**: In der Tailscale-Admin-Oberfläche (`/admin/machines`) das neue
 Gerät öffnen → "Disable key expiry" — sonst verliert der Container nach ein paar Monaten

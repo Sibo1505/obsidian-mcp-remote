@@ -168,6 +168,10 @@ async function main() {
         const appUp = await run("docker", ["compose", "up", "-d", "--build"], { cwd: root });
         if (appUp.ok) {
           console.log("✓ Server gestartet.");
+          // Frischer Vault-Checkout gehört dem Host-User (z.B. debian), nicht appuser (uid 999),
+          // als der der Container läuft — sonst scheitern MCP-Writes mit EACCES.
+          const chown = await run("docker", ["exec", "-u", "root", "obsidian-mcp-remote", "chown", "-R", "appuser:appuser", "/vault"]);
+          console.log(chown.ok ? "✓ Vault-Berechtigungen für appuser gesetzt." : `⚠ chown fehlgeschlagen: ${chown.error.message} — manuell nachholen, siehe docs/de/installation.md.`);
           const health = await run("curl", ["-sf", `http://${ip.stdout}:3000/health`]);
           console.log(health.ok ? `✓ Health-Check: ${health.stdout}` : "⚠ Health-Check noch nicht erreichbar — kurz warten und docs/de/verification.md durchgehen.");
         } else {

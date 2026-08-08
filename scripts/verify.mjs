@@ -95,6 +95,18 @@ async function main() {
   const pull = await run("docker", ["exec", "obsidian-mcp-remote", "git", "-C", "/vault", "pull"]);
   report("Vault-Sync (git pull)", pull.ok, pull.ok ? pull.stdout || "up to date" : pull.error?.message);
 
+  // 4b. Vault beschreibbar als appuser — frische Checkouts gehören sonst dem Host-User, nicht
+  // appuser (uid 999), und MCP-Writes scheitern still mit EACCES bis hierher.
+  const writeTest = await run("docker", [
+    "exec", "obsidian-mcp-remote", "sh", "-c",
+    "f=/vault/.verify-write-test-$$; echo ok > \"$f\" && rm \"$f\"",
+  ]);
+  report(
+    "Vault beschreibbar (appuser)",
+    writeTest.ok,
+    writeTest.ok ? undefined : `${writeTest.error?.message} — fix: docker exec -u root obsidian-mcp-remote chown -R appuser:appuser /vault`,
+  );
+
   // 5. Logs look clean
   const logs = await run("docker", ["logs", "obsidian-mcp-remote", "--tail", "50"]);
   const listening = logs.ok && logs.stdout.includes("listening on port");
