@@ -42,6 +42,6 @@
     "@types/safe-regex": "^1.1.6",
     "tailwindcss": "^4.3.3",
     "tsx": "^4.19.0",
-    "typescript": "^5.7.0"
+    "typescript": "^7.0.2"
   }
 }
