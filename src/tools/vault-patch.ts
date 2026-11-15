@@ -60,20 +60,18 @@ function patchFrontmatterValue(
   throw new Error(`Cannot ${operation} onto frontmatter key '${target}' of type ${typeof current}`);
 }
 
-export async function vaultPatch(vaultRoot: string, input: VaultPatchInput) {
+/** Applies a patch to a note's text and returns the new text. Pure: reads and writes nothing. */
+export function applyPatch(raw: string, input: VaultPatchInput): string {
   if (input.targetType === "block") {
     throw new Error("targetType 'block' is not supported in v1");
   }
 
-  const raw = await readNote(vaultRoot, input.path);
   const value = parseContentValue(input);
 
   if (input.targetType === "frontmatter") {
     const { content, data } = parseFrontmatter(raw);
     const nextData = patchFrontmatterValue(data, input.target, input.operation, value, input.createTargetIfMissing);
-    const output = stringifyFrontmatter(content, nextData);
-    await writeNote(vaultRoot, input.path, output);
-    return { path: input.path, patched: true };
+    return stringifyFrontmatter(content, nextData);
   }
 
   const { content, data } = parseFrontmatter(raw);
@@ -85,7 +83,14 @@ export async function vaultPatch(vaultRoot: string, input: VaultPatchInput) {
     trimTargetWhitespace: input.trimTargetWhitespace,
     rejectIfContentPreexists: input.rejectIfContentPreexists,
   });
-  const output = Object.keys(data).length > 0 ? stringifyFrontmatter(patchedContent, data) : patchedContent;
-  await writeNote(vaultRoot, input.path, output);
+  return Object.keys(data).length > 0 ? stringifyFrontmatter(patchedContent, data) : patchedContent;
+}
+
+export async function vaultPatch(vaultRoot: string, input: VaultPatchInput) {
+  if (input.targetType === "block") {
+    throw new Error("targetType 'block' is not supported in v1");
+  }
+  const raw = await readNote(vaultRoot, input.path);
+  await writeNote(vaultRoot, input.path, applyPatch(raw, input));
   return { path: input.path, patched: true };
 }

@@ -14,6 +14,11 @@ export class VaultPathError extends Error {
 // .obsidian holds plugin config/state, not vault content, and has no legitimate tool use case either.
 const BLOCKED_SEGMENTS = new Set([".git", ".obsidian"]);
 
+/** True when any path part is a vault-internal directory no tool may touch (.git, .obsidian). */
+export function hasBlockedSegment(segments: string[]): boolean {
+  return segments.some((segment) => BLOCKED_SEGMENTS.has(segment));
+}
+
 /**
  * Resolves a vault-relative path against vaultRoot and rejects anything
  * that would escape it (../, absolute paths, symlink-free traversal tricks), or that reaches
@@ -26,7 +31,7 @@ export function resolveInVault(vaultRoot: string, relativePath: string): string 
     throw new VaultPathError(relativePath);
   }
   const segments = path.relative(root, resolved).split(path.sep);
-  if (segments.some((segment) => BLOCKED_SEGMENTS.has(segment))) {
+  if (hasBlockedSegment(segments)) {
     throw new VaultPathError(relativePath, "Path targets a disallowed vault-internal directory");
   }
   return resolved;

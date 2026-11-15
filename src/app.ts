@@ -5,8 +5,8 @@ import helmet from "helmet";
 import { rateLimit } from "express-rate-limit";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { Config } from "./config.js";
+import { toResult } from "./tools/result.js";
 import { combinedAuth } from "./auth/combined.js";
 import { vaultReadSchema, vaultRead } from "./tools/vault-read.js";
 import { vaultWriteSchema, vaultWrite } from "./tools/vault-write.js";
@@ -29,18 +29,6 @@ const publicDir = path.join(repoRoot, "public");
 // Vendored rather than pulled from a CDN: this JS runs on a login page that handles credentials —
 // a compromised CDN would mean a credential-stealing script served on our own domain.
 const webauthnBrowserBundle = path.join(repoRoot, "node_modules", "@simplewebauthn", "browser", "dist", "bundle", "index.umd.min.js");
-
-async function toResult(fn: () => Promise<unknown>): Promise<CallToolResult> {
-  try {
-    const result = await fn();
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-  } catch (error) {
-    return {
-      isError: true,
-      content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],
-    };
-  }
-}
 
 function registerTools(server: McpServer, config: Config) {
   server.registerTool(

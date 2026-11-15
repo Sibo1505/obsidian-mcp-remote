@@ -35,8 +35,14 @@ function extractInlineTags(body: string): string[] {
   return [...tags];
 }
 
-async function listMarkdownFiles(vaultRoot: string): Promise<string[]> {
-  return fg("**/*.md", { cwd: vaultRoot, dot: false });
+/** Decides whether a note (vault-relative, "/"-separated path) may be part of a search at all. */
+export type NoteFilter = (relativePath: string) => Promise<boolean>;
+
+async function listMarkdownFiles(vaultRoot: string, include?: NoteFilter): Promise<string[]> {
+  const files = await fg("**/*.md", { cwd: vaultRoot, dot: false });
+  if (!include) return files;
+  const allowed = await Promise.all(files.map(include));
+  return files.filter((_, index) => allowed[index]);
 }
 
 async function parseNote(vaultRoot: string, relativePath: string): Promise<Omit<NoteJson, "backlinks">> {
@@ -62,8 +68,12 @@ function resolveLinkTarget(link: string, allPaths: string[]): string | undefined
   return allPaths.find((p) => (p.split("/").pop() ?? p).toLowerCase() === wanted);
 }
 
-export async function buildVaultIndex(vaultRoot: string): Promise<NoteJson[]> {
-  const files = await listMarkdownFiles(vaultRoot);
+/**
+ * Indexes every note `include` accepts (all notes without it). Excluded notes are left out
+ * completely: they are not matched, and they contribute no backlinks to the notes they link to.
+ */
+export async function buildVaultIndex(vaultRoot: string, include?: NoteFilter): Promise<NoteJson[]> {
+  const files = await listMarkdownFiles(vaultRoot, include);
   const partials = await Promise.all(files.map((f) => parseNote(vaultRoot, f)));
 
   const backlinkMap = new Map<string, Set<string>>();
@@ -107,8 +117,8 @@ export interface SearchQueryResult {
   result: unknown;
 }
 
-export async function runJsonLogicQuery(vaultRoot: string, query: object): Promise<SearchQueryResult[]> {
-  const index = await buildVaultIndex(vaultRoot);
+export async function runJsonLogicQuery(vaultRoot: string, query: object, include?: NoteFilter): Promise<SearchQueryResult[]> {
+  const index = await buildVaultIndex(vaultRoot, include);
   const results: SearchQueryResult[] = [];
   for (const note of index) {
     const result = jsonLogic.apply(query, note);
