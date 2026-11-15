@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import matter from "gray-matter";
+import { parseFrontmatter, stringifyFrontmatter } from "../src/vault/frontmatter.js";
 import { vaultRead } from "../src/tools/vault-read.js";
 import { vaultWrite } from "../src/tools/vault-write.js";
 import { vaultPatch } from "../src/tools/vault-patch.js";
@@ -95,6 +98,77 @@ test("searchQuery never evaluates JavaScript front matter", async () => {
     await writeNote(vaultRoot, "note.md", JS_FRONTMATTER_NOTE);
     await searchQuery(vaultRoot, { query: { "==": [1, 1] } });
     assert.equal(g.__frontmatterEvaluated, undefined);
+  });
+});
+
+test("front matter parsing and writing never fill gray-matter's module-level cache", () => {
+  const cache = (matter as unknown as { cache: Record<string, unknown> }).cache;
+  const before = Object.keys(cache).length;
+  const marker = `cache-probe-${Date.now()}`;
+  parseFrontmatter(`---\ntitle: ${marker}\n---\nBody ${marker}`);
+  stringifyFrontmatter(`---\nnested: ${marker}\n---\nBody ${marker}`, { title: marker });
+  assert.equal(Object.keys(cache).length, before);
+});
+
+test("writing front matter keeps the body as it is, even when the body starts with a front matter block", () => {
+  const body = "---\nnested: 1\n---\nBody\n";
+  assert.equal(stringifyFrontmatter(body, { title: "t" }), `---\ntitle: t\n---\n${body}`);
+  assert.equal(stringifyFrontmatter("Body", {}), "Body\n");
+});
+
+test("only src/vault/frontmatter.ts talks to gray-matter", async () => {
+  const srcRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src");
+  const files = (await readdir(srcRoot, { recursive: true })).filter((f) => f.endsWith(".ts"));
+  const importers = [];
+  for (const file of files) {
+    const text = await readFile(path.join(srcRoot, file), "utf-8");
+    if (/from\s+["']gray-matter["']|require\(\s*["']gray-matter["']\s*\)/.test(text)) importers.push(file.split(path.sep).join("/"));
+  }
+  assert.deepEqual(importers, ["vault/frontmatter.ts"]);
+});
+
+/** Collects console.error lines while `fn` runs. */
+async function captureErrors(fn: () => Promise<void>): Promise<string[]> {
+  const lines: string[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => lines.push(args.map(String).join(" "));
+  try {
+    await fn();
+  } finally {
+    console.error = original;
+  }
+  return lines;
+}
+
+test("searchQuery keeps answering when a note has front matter that is not valid YAML, and logs only its path", async () => {
+  await withTempVault(async (vaultRoot) => {
+    await writeNote(vaultRoot, "broken.md", "---\ntitle: [unclosed-secret-marker\n---\nBroken body");
+    await writeNote(vaultRoot, "fine.md", "---\nstatus: done\n---\nFine");
+    const logs = await captureErrors(async () => {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const byStatus = await searchQuery(vaultRoot, { query: { "==": [{ var: "frontmatter.status" }, "done"] } });
+        assert.deepEqual(byStatus.map((r) => r.filename), ["fine.md"]);
+        // The broken note is still searched, as plain text without front matter.
+        const byText = await searchQuery(vaultRoot, { query: { regexp: ["Broken body", { var: "content" }] } });
+        assert.deepEqual(byText.map((r) => r.filename), ["broken.md"]);
+      }
+    });
+    assert.ok(logs.some((l) => l.includes('"broken.md"')));
+    assert.ok(logs.every((l) => !l.includes("unclosed-secret-marker")));
+  });
+});
+
+test("vaultRead returns a note with invalid YAML front matter as plain body, every time", async () => {
+  await withTempVault(async (vaultRoot) => {
+    const raw = "---\ntitle: [unclosed\n---\nBody";
+    await writeNote(vaultRoot, "broken.md", raw);
+    await captureErrors(async () => {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const result = await vaultRead(vaultRoot, { path: "broken.md" });
+        assert.equal(result.content, raw);
+        assert.deepEqual(result.frontmatter, {});
+      }
+    });
   });
 });
 
