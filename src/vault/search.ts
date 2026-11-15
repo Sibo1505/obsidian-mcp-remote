@@ -92,8 +92,82 @@ export async function buildVaultIndex(vaultRoot: string, include?: NoteFilter): 
   }));
 }
 
+/**
+ * Budget for one search. The main listener searches without one (as before); scoped tokens get
+ * SCOPED_SEARCH_LIMITS, because their queries come from a less trusted client and one expensive
+ * query blocks the event loop for both listeners.
+ */
+export interface SearchLimits {
+  /** Size of the query as JSON, in UTF-8 bytes. */
+  maxQueryBytes: number;
+  /** Nesting depth of the query (objects and arrays). */
+  maxDepth: number;
+  /** Number of values in the query, at any depth. */
+  maxNodes: number;
+  /** Longest glob pattern; brace expansion ({a,b}) is off, braces match literally. */
+  maxGlobLength: number;
+  /** More matches than this is an error (narrow the query), never a silently cut list. */
+  maxResults: number;
+  /** Size of all results as JSON, in UTF-8 bytes. */
+  maxResultBytes: number;
+  /** Time for evaluating the query against all notes. */
+  timeBudgetMs: number;
+}
+
+export const SCOPED_SEARCH_LIMITS: SearchLimits = {
+  maxQueryBytes: 8 * 1024,
+  maxDepth: 20,
+  maxNodes: 500,
+  maxGlobLength: 200,
+  maxResults: 500,
+  maxResultBytes: 1024 * 1024,
+  timeBudgetMs: 5_000,
+};
+
+/** A search that would exceed its SearchLimits. The message says which limit. */
+export class SearchLimitError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SearchLimitError";
+  }
+}
+
+function checkQueryShape(query: object, limits: SearchLimits): void {
+  if (Buffer.byteLength(JSON.stringify(query), "utf-8") > limits.maxQueryBytes) {
+    throw new SearchLimitError(`Search query larger than ${limits.maxQueryBytes} bytes`);
+  }
+  let nodes = 0;
+  const walk = (value: unknown, depth: number): void => {
+    nodes++;
+    if (nodes > limits.maxNodes) throw new SearchLimitError(`Search query has more than ${limits.maxNodes} values`);
+    if (value === null || typeof value !== "object") return;
+    if (depth >= limits.maxDepth) throw new SearchLimitError(`Search query nested deeper than ${limits.maxDepth} levels`);
+    for (const child of Object.values(value)) walk(child, depth + 1);
+  };
+  walk(query, 0);
+}
+
+// Limits of the search that is evaluating right now. The evaluation loop below is synchronous, so
+// no other search can run in between; operators read this instead of their `this`, which
+// json-logic rebinds inside map/filter/reduce.
+let activeLimits: SearchLimits | undefined;
+
+// Compiled glob patterns, so a query is not recompiled for every note.
+const globCache = new Map<string, Minimatch>();
+
 jsonLogic.add_operation("glob", (pattern: string, value: string) => {
-  return new Minimatch(pattern, { nocase: true }).match(value ?? "");
+  const limits = activeLimits;
+  if (limits && (typeof pattern !== "string" || pattern.length > limits.maxGlobLength)) {
+    throw new SearchLimitError(`glob pattern must be text of at most ${limits.maxGlobLength} characters`);
+  }
+  const key = `${limits ? "nobrace" : "brace"}:${pattern}`;
+  let matcher = globCache.get(key);
+  if (!matcher) {
+    matcher = new Minimatch(pattern, { nocase: true, nobrace: limits !== undefined });
+    if (globCache.size >= 100) globCache.clear();
+    globCache.set(key, matcher);
+  }
+  return matcher.match(value ?? "");
 });
 
 // `pattern` comes straight from an MCP tool call, evaluated against arbitrary-length note
@@ -117,14 +191,37 @@ export interface SearchQueryResult {
   result: unknown;
 }
 
-export async function runJsonLogicQuery(vaultRoot: string, query: object, include?: NoteFilter): Promise<SearchQueryResult[]> {
+export async function runJsonLogicQuery(
+  vaultRoot: string,
+  query: object,
+  include?: NoteFilter,
+  limits?: SearchLimits,
+): Promise<SearchQueryResult[]> {
+  if (limits) checkQueryShape(query, limits);
   const index = await buildVaultIndex(vaultRoot, include);
   const results: SearchQueryResult[] = [];
-  for (const note of index) {
-    const result = jsonLogic.apply(query, note);
-    if (result) {
-      results.push({ filename: note.path, result });
+  let resultBytes = 2;
+  const deadline = limits ? Date.now() + limits.timeBudgetMs : Number.POSITIVE_INFINITY;
+  activeLimits = limits;
+  try {
+    for (const note of index) {
+      if (Date.now() > deadline) throw new SearchLimitError(`Search took longer than ${limits!.timeBudgetMs} ms`);
+      const result = jsonLogic.apply(query, note);
+      if (!result) continue;
+      const entry = { filename: note.path, result };
+      results.push(entry);
+      if (limits) {
+        if (results.length > limits.maxResults) {
+          throw new SearchLimitError(`More than ${limits.maxResults} matches; narrow the query`);
+        }
+        resultBytes += Buffer.byteLength(JSON.stringify(entry) ?? "", "utf-8") + 1;
+        if (resultBytes > limits.maxResultBytes) {
+          throw new SearchLimitError(`Result larger than ${limits.maxResultBytes} bytes; narrow the query`);
+        }
+      }
     }
+  } finally {
+    activeLimits = undefined;
   }
   return results;
 }
