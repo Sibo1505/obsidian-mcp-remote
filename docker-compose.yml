@@ -59,6 +59,7 @@ services:
       # Optional scoped tokens (docs/en/scoped-tokens.md). Empty = no scoped listener. Add the
       # variable each token's "tokenEnv" names here too. No ports: mapping - tailnet only.
       - SCOPED_PORT=${SCOPED_PORT:-}
+      - SCOPED_HOST=${SCOPED_HOST:-}
       - SCOPED_TOKENS_JSON=${SCOPED_TOKENS_JSON:-}
     volumes:
       - ${VAULT_PATH}:/vault

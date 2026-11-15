@@ -17,26 +17,37 @@ Eingeschränkte Tokens nutzen einen **eigenen Listener auf einem eigenen Port**.
 - **Kein Proxy-Vertrauen.** Der Haupt-Listener vertraut einem Reverse-Proxy-Schritt und liest die
   Absender-Adresse deshalb aus `X-Forwarded-For`. Wer diesen Port direkt erreicht, kann in dem Kopf
   jede Adresse eintragen. Der eingeschränkte Listener vertraut keinem Proxy: Absender ist die
-  Adresse der TCP-Verbindung (ohne `::ffff:`), weitergeleitete Köpfe werden ignoriert. Darum müssen
-  Clients den Port **direkt** erreichen, nie über einen Reverse Proxy.
+  Adresse der TCP-Verbindung, weitergeleitete Köpfe werden ignoriert. Darum müssen Clients den Port
+  **direkt** erreichen, nie über einen Reverse Proxy.
 - **Exakte Adressen, Ablaufdatum.** Eine Anfrage kommt nur durch mit einem eingetragenen Token, von
   einer der exakten Adressen dieses Tokens (`allowFrom`) und vor `expiresAt`. Ein falscher Token,
   eine falsche Adresse und ein abgelaufener Token bekommen alle dieselbe Antwort
   `401 {"error":"Unauthorized"}`. Den Grund schreibt nur das Server-Log.
+- **Eine Nachricht pro Anfrage, mit Limit.** Der eingeschränkte Port nimmt pro HTTP-Anfrage genau
+  eine JSON-RPC-Nachricht an; ein Batch bekommt `400`. Mehr als 60 Anfragen pro Minute von einer
+  Adresse bekommen `429` (gezählt vor der Token-Prüfung, getrennt vom Haupt-Port).
 - **Lesen** sieht den ganzen Vault außer den Präfixen in `readDeny`. Gesperrte Dateien und Ordner
   blendet `vault_list` aus, `vault_read` lehnt sie ab, und `search_query` lässt sie weg (auch als
   Backlinks). Symlinks werden vorher aufgelöst. Ein Link führt also weder in einen gesperrten Ordner
-  noch aus dem Vault hinaus.
+  noch aus dem Vault hinaus. Lesezugriffe teilen sich höchstens alle 10 Sekunden ein `git pull`. Sie
+  können dem Remote also bis zu 10 Sekunden hinterherhinken.
+- **Die Suche hat ein Budget.** Für einen eingeschränkten Token lehnt `search_query` Abfragen ab, die
+  größer als 8 KB sind, tiefer als 20 Ebenen gehen oder mehr als 500 Werte haben. Ein
+  `glob`-Muster hat höchstens 200 Zeichen, und geschweifte Klammern gelten wörtlich (`{a,b}` wird
+  nicht aufgefächert). Mehr als 500 Treffer, ein Ergebnis über 1 MB oder mehr als 5 Sekunden
+  Rechenzeit enden mit einem Fehler, der um eine engere Abfrage bittet, nie mit einer still
+  gekürzten Liste.
 - **Schreiben** (`vault_write`, `vault_patch`) prüft der Server, nicht der Client:
   - nur unter `writeDir` und nur `.md`-Dateien;
   - jeder Ordnername passt auf `^[a-z0-9][a-z0-9-]*$`, der Dateiname auf
     `^[a-z0-9][a-z0-9-]*\.md$`. Also keine Punkt-Dateien oder Punkt-Ordner (`.claude/`), keine
     Großbuchstaben, keine Leerzeichen;
-  - kein Name, der mit `claude` oder `agents` beginnt (`CLAUDE.md`, `claude-notes.md`, `agents.md`
-    in jeder Schreibweise), keine Windows-Gerätenamen (`con`, `prn`, `aux`, `nul`,
-    `com1`–`com9`, `lpt1`–`lpt9`);
-  - höchstens 100 Zeichen pro Name, höchstens 4 Ebenen unter `writeDir`;
-  - der Pfad muss schon in einfacher Form sein: kein `..`, `.`, `//` oder `\`;
+  - kein Name, der mit einem der bekannten Anweisungsnamen von Agents beginnt (Liste unter
+    [Grenzen](#grenzen)), und keine Windows-Gerätenamen (`con`, `prn`, `aux`, `nul`,
+    `com0`–`com9`, `lpt0`–`lpt9`);
+  - höchstens 100 Zeichen pro Name und höchstens 4 Pfadteile unter `writeDir`, Ordner und Datei
+    zusammen gezählt (`notes-inbox/a/b/c/x.md` ist das Tiefste, was geht);
+  - der Pfad muss schon in einfacher Form sein: kein `..`- oder `.`-Teil, kein `//`, kein `\`;
   - kein Symlink auf dem Weg vom Vault bis zur Notiz, und die Notiz selbst darf kein Symlink sein
     und keine weiteren Hardlinks haben. Der aufgelöste Ordner muss in `realpath(vault/writeDir)`
     liegen;
@@ -45,25 +56,32 @@ Eingeschränkte Tokens nutzen einen **eigenen Listener auf einem eigenen Port**.
 - **Markierte Notizen.** Nach jedem eingeschränkten Schreiben setzt der Server die
   `frontmatter`-Felder des Tokens und ergänzt seine `tags` in der fertigen Notiz, auch wenn ein
   Schreiben oder Patch sie entfernen wollte.
-- **Nachvollziehbar.** Der Commit-Text beginnt mit `<name>: vault_write <pfad>` bzw.
-  `<name>: vault_patch <pfad>`. Jeder Werkzeug-Aufruf schreibt eine Log-Zeile, nie mit Inhalt oder
-  Token:
+- **Konflikte.** Hat jemand dieselbe Notiz gleichzeitig geändert, behält der Server die Fassung des
+  Tokens als `<name>-conflict-<jjjjmmtthhmmss>.md` daneben, nach denselben Regeln.
+- **Nachvollziehbar.** Der Commit-Text beginnt mit `<name>: vault_write <pfad>`,
+  `<name>: vault_patch <pfad>` oder `<name>: conflict quarantined <pfad>`. Jede Anfrage schreibt
+  eine Log-Zeile, nie mit Inhalt oder Token:
 
   ```text
+  scoped token=agent method=tools/list
   scoped token=agent tool=vault_write path="notes-inbox/today.md" result=ok
   scoped token=agent tool=vault_write path="CLAUDE.md" result=denied:outside-write-dir
+  scoped token=agent tool=vault_read path="missing.md" result=error:ENOENT
   scoped auth rejected reason=address-not-allowed token=agent from=192.0.2.10
   ```
 
+  Fehlerantworten an den Client enthalten nie Serverpfade: Systemfehler werden zu festen Texten wie
+  `Not found: <pfad>`, der Fehlercode steht nur im Log.
 - **Im Zweifel zu.** Ist an den Einstellungen etwas ungültig, startet der eingeschränkte Listener
-  nicht, und das Log sagt warum. Der Haupt-Listener läuft normal weiter. Es gibt nie einen Rückfall
-  auf breitere Rechte.
+  nicht, und das Log nennt das Feld. Der Haupt-Listener läuft normal weiter. Es gibt nie einen
+  Rückfall auf breitere Rechte.
 
 ## Einstellungen
 
 | Variable | Bedeutung |
 |---|---|
 | `SCOPED_PORT` | Port des eingeschränkten Listeners. Leer oder nicht gesetzt: kein zweiter Listener, nichts ändert sich. Muss sich von `PORT` unterscheiden. |
+| `SCOPED_HOST` | Optional: IP-Adresse, an die der eingeschränkte Listener gebunden wird. Leer oder nicht gesetzt: **alle Interfaces** (wer ihn erreicht, entscheiden dann die Netz-Regeln unten). |
 | `SCOPED_TOKENS_JSON` | JSON-Liste der Token-Einträge (unten). Nicht geheim: Sie enthält nur den *Namen* der Variable mit dem Geheimnis. |
 | *eine Variable pro Token* | Das Geheimnis selbst, mindestens 32 Zeichen, benannt in `tokenEnv`. Erzeugen mit `openssl rand -hex 32`. |
 
@@ -72,11 +90,11 @@ wegfallen lässt):
 
 | Feld | Pflicht | Bedeutung |
 |---|---|---|
-| `name` | ja | `[a-z0-9-]`, steht im Log und im Commit-Text. |
-| `tokenEnv` | ja | Name der Umgebungsvariable mit dem Geheimnis. Der Wert muss sich von `TOKEN_INTERNAL`, den OAuth-Geheimnissen und den Geheimnissen anderer Tokens unterscheiden. |
-| `allowFrom` | ja | Exakte IP-Adressen (keine Bereiche, keine Hostnamen). |
+| `name` | ja | `[a-z0-9-]`, eindeutig; steht im Log und im Commit-Text. |
+| `tokenEnv` | ja | Name der Umgebungsvariable mit dem Geheimnis. Ihr **Wert** muss sich von den Werten von `TOKEN_INTERNAL`, `OAUTH_CLIENT_SECRET`, `OAUTH_PASSWORD` und den Geheimnissen aller anderen Tokens unterscheiden. |
+| `allowFrom` | ja | Exakte IP-Adressen (keine Bereiche, keine Hostnamen). Gespeichert in einheitlicher Schreibweise, `FD7A:115C:A1E0:0:0:0:0:1` und `fd7a:115c:a1e0::1` sind also dieselbe Adresse. |
 | `writeDir` | ja | Der eine beschreibbare Ordner, relativ zum Vault, nach den Namensregeln oben. |
-| `readDeny` | nein | Pfad-Präfixe (Ordner oder Dateien), die der Token nicht lesen darf. Standard: leer, also ist alles lesbar. |
+| `readDeny` | nein | Pfad-Präfixe (Ordner oder Dateien), die der Token nicht lesen darf: Ein Eintrag gilt für sich selbst und alles darunter, ohne Groß-/Kleinschreibung. Standard: leer, also ist alles lesbar. Ein Eintrag, der sich mit `writeDir` überschneidet (ihn abdeckt, in ihm liegt oder darüber liegt), ist ein Fehler. |
 | `expiresAt` | ja | ISO-Datum (`2026-12-31`, gemeint ist 00:00 UTC) oder Datum mit Uhrzeit und Zeitzone (`2026-12-31T23:59:00Z`). Danach: 401 und eine Log-Zeile. |
 | `writesPerHour` | nein | Standard 60. |
 | `frontmatter` | nein | Felder, die der Server in jeder Notiz dieses Tokens setzt (Text, Zahl, Ja/Nein; nicht `tags`). |
@@ -90,7 +108,7 @@ SCOPED_TOKENS_JSON='[{"name":"agent","tokenEnv":"TOKEN_AGENT","allowFrom":["100.
 TOKEN_AGENT=<openssl rand -hex 32>
 ```
 
-Alle drei kommen in den Container (`docker-compose.yml` gibt `SCOPED_PORT` und
+Diese Werte kommen in den Container (`docker-compose.yml` gibt `SCOPED_PORT`, `SCOPED_HOST` und
 `SCOPED_TOKENS_JSON` schon weiter; deine Geheimnis-Variable ergänzt du daneben). Mit dem
 Tailscale-Sidecar ist der Container über seine Tailnet-Adresse erreichbar. Lege für den
 eingeschränkten Port also **kein** `ports:`-Mapping an.
@@ -121,10 +139,25 @@ Die Token-Prüfung ist eine Schicht, das Netz sollte die zweite sein:
   (Webseiten, Issues, Mails), kann dazu gebracht werden, Gelesenes nach außen zu schicken. Git
   schützt vor ungewollten Änderungen, nicht vor Abfluss. Private Inhalte gehören in `readDeny` oder
   gar nicht in diesen Vault.
-- **Notizen sind Daten.** Die Namensregeln verhindern Anweisungs- oder Konfigurationsdateien. Der
-  *Text* einer Notiz kann aber trotzdem Anweisungen für den enthalten, der sie später liest.
-  Behandle Notizen eines eingeschränkten Tokens (erkennbar an seinem `frontmatter` und seinen
-  `tags`) als Daten, nicht als Anweisungen, und prüfe sie, bevor du sie woandershin verschiebst.
+- **Gesperrte Namen sind eine Liste bekannter Namen.** Eingeschränktes Schreiben lehnt Datei- und
+  Ordnernamen ab, die mit `claude`, `agent` (auch `agents`), `gemini`, `qwen`, `crush`, `warp`,
+  `copilot`, `cursor`, `windsurf`, `cline`, `conventions` oder `readme` beginnen, in jeder
+  Schreibweise. Das sind die Anweisungs- und Regeldateien verbreiteter Coding-Agents (`CLAUDE.md`,
+  `AGENTS.md`, `GEMINI.md`, `copilot-instructions.md`, ...). Punkt-Dateien und Punkt-Ordner
+  (`.cursorrules`, `.claude/`) sind ohnehin gesperrt. Ein Werkzeug, das Anweisungen aus einem
+  anderen Namen lädt, ist nicht abgedeckt.
+- **Notizen sind Daten.** Die Namensregeln verhindern die Dateien oben. Der *Text* einer Notiz kann
+  aber trotzdem Anweisungen für den enthalten, der sie später liest. Behandle Notizen eines
+  eingeschränkten Tokens (erkennbar an seinem `frontmatter` und seinen `tags`) als Daten, nicht als
+  Anweisungen, und prüfe sie, bevor du sie woandershin verschiebst. Auf Geräten, die den Vault
+  synchronisieren, sollten Plugins, die Code aus Notizen ausführen, für diese Notizen aus bleiben
+  (zum Beispiel JavaScript-Abfragen in Dataview oder bei Templater „Trigger on new file creation“).
+- **Frontmatter wird nie ausgeführt.** Eine Notiz mit JavaScript-Frontmatter (`---js`) wird ohne
+  diesen Block gelesen (er wird weder ausgeführt noch zurückgegeben). Eingeschränktes Schreiben und
+  `vault_patch` lehnen es ab, sie neu zu schreiben. Frontmatter, das kein gültiges YAML ist, wird als
+  normaler Text gelesen (eine Log-Zeile nennt die Notiz).
+- **Nur einfache Namen.** Eingeschränktes Schreiben nimmt nur Kleinbuchstaben (ASCII), Ziffern und
+  `-` an: keine Leerzeichen, keine Großbuchstaben, keine Umlaute.
 - **Das Geheimnis liegt auf dem Agent-Rechner.** Es gilt nur auf dem eingeschränkten Port, nur von
   den eingetragenen Adressen und nur bis `expiresAt`. Zum Wechseln änderst du die Variable und
   startest neu.
