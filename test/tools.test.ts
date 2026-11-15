@@ -102,6 +102,18 @@ test("searchQuery never evaluates JavaScript front matter", async () => {
   });
 });
 
+// Second layer behind the safe helpers: loading src/vault/frontmatter.ts also replaces the engine in
+// gray-matter's shared registry, so even a direct call without options cannot reach eval().
+test("even a direct gray-matter call without options never evaluates JavaScript front matter", () => {
+  const g = globalThis as { __frontmatterEvaluated?: boolean };
+  delete g.__frontmatterEvaluated;
+  matter(`${JS_FRONTMATTER_NOTE} ${Date.now()}`);
+  // stringify refuses to write JavaScript front matter back (it throws); what matters is that
+  // parsing the string first did not run it.
+  assert.throws(() => matter.stringify(`${JS_FRONTMATTER_NOTE} ${Date.now()}`, { title: "t" }));
+  assert.equal(g.__frontmatterEvaluated, undefined);
+});
+
 test("front matter parsing and writing never fill gray-matter's module-level cache", () => {
   const cache = (matter as unknown as { cache: Record<string, unknown> }).cache;
   const before = Object.keys(cache).length;
