@@ -9,7 +9,7 @@ import { vaultListSchema } from "../tools/vault-list.js";
 import { searchQuerySchema } from "../tools/search-query.js";
 import { hasBlockedSegment, listDir, resolveInVault } from "../vault/fs.js";
 import { runJsonLogicQuery } from "../vault/search.js";
-import { pullBestEffort, commitAndPush } from "../vault/git.js";
+import { commitAndPush } from "../vault/git.js";
 import type { ScopedToken } from "./config.js";
 import { MAX_DEPTH_BELOW_WRITE_DIR } from "./names.js";
 import { enforceFrontmatter, type WriteBudget } from "./enforce.js";
@@ -30,6 +30,28 @@ export interface ScopedToolContext {
   token: ScopedToken;
   budget: WriteBudget;
   log: (line: string) => void;
+  /** Freshness pull before a read, shared and throttled across requests (see pull.ts). */
+  pull: () => Promise<void>;
+}
+
+/** Names of the tools registered for a scoped token. */
+export const SCOPED_TOOL_NAMES = new Set(["vault_read", "vault_write", "vault_patch", "vault_list", "search_query"]);
+
+/**
+ * What the client sees for an error that is not a policy denial. System errors (they carry a
+ * code such as ENOENT) name absolute server paths in their message, so they become a fixed text;
+ * the code goes to the log only. Other errors (heading not found, invalid patch input) are
+ * written by this server and keep their message.
+ */
+function clientError(error: unknown, requestedPath: string): { text: string; logged: string } {
+  if (error instanceof ScopedDenied) return { text: error.message, logged: `denied:${error.code}` };
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  if (typeof code === "string") {
+    const safeCode = /^[A-Z0-9_]{1,32}$/.test(code) ? code : "OTHER";
+    const text = safeCode === "ENOENT" ? `Not found: ${requestedPath}` : `Request failed: ${requestedPath}`;
+    return { text, logged: `error:${safeCode}` };
+  }
+  return { text: error instanceof Error ? error.message : String(error), logged: "error" };
 }
 
 /**
@@ -50,11 +72,9 @@ async function audited(
     ctx.log(line("ok"));
     return { content: [{ type: "text", text: JSON.stringify(value, null, 2) }] };
   } catch (error) {
-    ctx.log(line(error instanceof ScopedDenied ? `denied:${error.code}` : "error"));
-    return {
-      isError: true,
-      content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],
-    };
+    const { text, logged } = clientError(error, requestedPath);
+    ctx.log(line(logged));
+    return { isError: true, content: [{ type: "text", text }] };
   }
 }
 
@@ -81,7 +101,7 @@ export function registerScopedTools(server: McpServer, ctx: ScopedToolContext): 
     { description: "Read a vault file, optionally extracting a heading or frontmatter section.", inputSchema: vaultReadSchema },
     (input) =>
       audited(ctx, "vault_read", input.path, async () => {
-        await pullBestEffort(vault);
+        await ctx.pull();
         await checkReadable(vault, readDeny, input.path);
         return vaultRead(vault, input);
       }),
@@ -127,7 +147,7 @@ export function registerScopedTools(server: McpServer, ctx: ScopedToolContext): 
     { description: "List files and subdirectories inside a vault directory.", inputSchema: vaultListSchema },
     (input) =>
       audited(ctx, "vault_list", input.path, async () => {
-        await pullBestEffort(vault);
+        await ctx.pull();
         await checkReadable(vault, readDeny, input.path);
         const root = path.resolve(vault);
         const base = path.relative(root, resolveInVault(root, input.path)).split(path.sep).join("/");
@@ -144,7 +164,7 @@ export function registerScopedTools(server: McpServer, ctx: ScopedToolContext): 
     { description: "Search vault notes using a JsonLogic query evaluated against each note's metadata.", inputSchema: searchQuerySchema },
     (input) =>
       audited(ctx, "search_query", "-", async () => {
-        await pullBestEffort(vault);
+        await ctx.pull();
         const readable = async (relativePath: string) => {
           try {
             await checkReadable(vault, readDeny, relativePath);

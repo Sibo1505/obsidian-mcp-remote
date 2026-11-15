@@ -7,7 +7,9 @@ import type { Config } from "../config.js";
 import type { ScopedToken } from "./config.js";
 import { scopedAuth, scopedTokenOf } from "./auth.js";
 import { WriteBudget } from "./enforce.js";
-import { registerScopedTools } from "./tools.js";
+import { SCOPED_TOOL_NAMES, registerScopedTools } from "./tools.js";
+import { throttlePull } from "./pull.js";
+import { pullBestEffort } from "../vault/git.js";
 
 export interface ScopedAppOptions {
   /** Receives the audit and auth-failure lines. Defaults to console.log. */
@@ -22,6 +24,7 @@ export interface ScopedAppOptions {
 export function createScopedApp(config: Config, tokens: ScopedToken[], options: ScopedAppOptions = {}): express.Express {
   const log = options.log ?? ((line: string) => console.log(line));
   const budget = new WriteBudget();
+  const pull = throttlePull(() => pullBestEffort(config.VAULT_PATH));
 
   const app = express();
   app.set("trust proxy", false);
@@ -34,6 +37,9 @@ export function createScopedApp(config: Config, tokens: ScopedToken[], options: 
     limit: 60,
     standardHeaders: true,
     legacyHeaders: false,
+    // Count every single address on its own (the default groups IPv6 addresses by /56, which
+    // would put all machines of a tailnet into one bucket).
+    ipv6Subnet: false,
     // Forwarded-for headers are ignored here on purpose; no need to warn about seeing one.
     validate: { xForwardedForHeader: false, forwardedHeader: false },
   });
@@ -43,8 +49,25 @@ export function createScopedApp(config: Config, tokens: ScopedToken[], options: 
   });
 
   app.post("/mcp", scopedRateLimit, scopedAuth(tokens, log), express.json({ limit: "1mb" }), async (req, res) => {
+    const token = scopedTokenOf(res);
+    // One JSON-RPC message per HTTP request. A batch would let one request (and one rate-limit
+    // slot) carry thousands of tool calls.
+    if (Array.isArray(req.body)) {
+      log(`scoped token=${token.name} method=batch result=denied:batch`);
+      res.status(400).json({ error: "Batch requests are not supported" });
+      return;
+    }
+    // Tool calls get their own audit line from the tool; every other request gets this one.
+    const message = req.body as { method?: unknown; params?: { name?: unknown } };
+    const method =
+      typeof message.method === "string" && /^[\w./$-]{1,64}$/.test(message.method) ? message.method : "invalid";
+    const toolName = message.params?.name;
+    if (method !== "tools/call" || typeof toolName !== "string" || !SCOPED_TOOL_NAMES.has(toolName)) {
+      log(`scoped token=${token.name} method=${method}`);
+    }
+
     const server = new McpServer({ name: "obsidian-mcp-remote", version: "0.1.0" });
-    registerScopedTools(server, { config, token: scopedTokenOf(res), budget, log });
+    registerScopedTools(server, { config, token, budget, log, pull });
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     res.on("close", () => {
       transport.close();
