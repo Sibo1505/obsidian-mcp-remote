@@ -714,6 +714,21 @@ test("scoped search_query never matches readDeny notes, nor shows them as backli
   });
 });
 
+test("scoped search_query runs with the search budget: an oversized query is refused and logged", async () => {
+  await withScopedServer([makeScopedToken()], async ({ baseUrl, vaultRoot, logs }) => {
+    await mkdir(path.join(vaultRoot, "projects"), { recursive: true });
+    await writeFile(path.join(vaultRoot, "projects", "a.md"), "A");
+    const wide = { or: Array.from({ length: 600 }, () => false) };
+    const refused = await callTool(baseUrl, "search_query", { query: wide });
+    assert.equal(refused.isError, true);
+    assert.match(refused.text, /query/i);
+    assert.ok(logs.some((l) => l.includes("tool=search_query") && l.includes("result=denied:search-limit")));
+    // Braces in glob patterns are literal for scoped tokens.
+    const braces = await callTool(baseUrl, "search_query", { query: { glob: ["projects/{a,b}.md", { var: "path" }] } });
+    assert.deepEqual(JSON.parse(braces.text), []);
+  });
+});
+
 test("scoped reads do not follow a symlink that leads out of the vault", async () => {
   await withScopedServer([makeScopedToken()], async ({ baseUrl, vaultRoot }) => {
     const outside = `${vaultRoot}-outside`;

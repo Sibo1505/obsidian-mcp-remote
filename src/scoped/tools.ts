@@ -8,7 +8,7 @@ import { vaultPatchSchema, applyPatch } from "../tools/vault-patch.js";
 import { vaultListSchema } from "../tools/vault-list.js";
 import { searchQuerySchema } from "../tools/search-query.js";
 import { hasBlockedSegment, listDir, resolveInVault } from "../vault/fs.js";
-import { runJsonLogicQuery } from "../vault/search.js";
+import { runJsonLogicQuery, SCOPED_SEARCH_LIMITS, SearchLimitError } from "../vault/search.js";
 import { commitAndPush } from "../vault/git.js";
 import type { ScopedToken } from "./config.js";
 import { MAX_DEPTH_BELOW_WRITE_DIR } from "./names.js";
@@ -173,7 +173,12 @@ export function registerScopedTools(server: McpServer, ctx: ScopedToolContext): 
             return false;
           }
         };
-        return runJsonLogicQuery(vault, input.query as object, readable);
+        try {
+          return await runJsonLogicQuery(vault, input.query as object, readable, SCOPED_SEARCH_LIMITS);
+        } catch (error) {
+          if (error instanceof SearchLimitError) throw new ScopedDenied("search-limit", error.message);
+          throw error;
+        }
       }),
   );
 }

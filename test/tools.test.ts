@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import matter from "gray-matter";
 import { parseFrontmatter, stringifyFrontmatter } from "../src/vault/frontmatter.js";
+import { runJsonLogicQuery, SCOPED_SEARCH_LIMITS, SearchLimitError, type SearchLimits } from "../src/vault/search.js";
 import { vaultRead } from "../src/tools/vault-read.js";
 import { vaultWrite } from "../src/tools/vault-write.js";
 import { vaultPatch } from "../src/tools/vault-patch.js";
@@ -436,6 +437,66 @@ test("searchQuery's regexp operator rejects a catastrophic-backtracking pattern 
     // rather than actually running the regex against the crafted input.
     assert.ok(Date.now() - start < 1000);
     assert.equal(results.length, 0);
+  });
+});
+
+// --- search limits (used for scoped tokens; the main listener runs without them) ---
+
+const limits = (overrides: Partial<SearchLimits> = {}): SearchLimits => ({ ...SCOPED_SEARCH_LIMITS, ...overrides });
+
+test("search limits: more matches than allowed is an error, not a silently cut list", async () => {
+  await withTempVault(async (vaultRoot) => {
+    for (const name of ["a", "b", "c"]) await writeNote(vaultRoot, `${name}.md`, name);
+    await assert.rejects(() => runJsonLogicQuery(vaultRoot, { "==": [1, 1] }, undefined, limits({ maxResults: 2 })), SearchLimitError);
+    assert.equal((await runJsonLogicQuery(vaultRoot, { "==": [1, 1] }, undefined, limits({ maxResults: 3 }))).length, 3);
+  });
+});
+
+test("search limits: a result larger than the byte budget is an error", async () => {
+  await withTempVault(async (vaultRoot) => {
+    await writeNote(vaultRoot, "big.md", "x".repeat(500));
+    await assert.rejects(
+      () => runJsonLogicQuery(vaultRoot, { var: "content" }, undefined, limits({ maxResultBytes: 100 })),
+      SearchLimitError,
+    );
+  });
+});
+
+test("search limits: glob braces stay literal and long glob patterns are refused, also when computed", async () => {
+  await withTempVault(async (vaultRoot) => {
+    await mkdir(path.join(vaultRoot, "projects"));
+    await writeNote(vaultRoot, "projects/a.md", "---\npattern: 'projects/{a,b}.md'\n---\nA");
+    const braces = { glob: ["projects/{a,b}.md", { var: "path" }] };
+    assert.deepEqual((await runJsonLogicQuery(vaultRoot, braces)).map((r) => r.filename), ["projects/a.md"]);
+    assert.deepEqual(await runJsonLogicQuery(vaultRoot, braces, undefined, limits()), []);
+    const fromNote = { glob: [{ var: "frontmatter.pattern" }, { var: "path" }] };
+    assert.deepEqual(await runJsonLogicQuery(vaultRoot, fromNote, undefined, limits()), []);
+    const long = { glob: [`${"*".repeat(201)}`, { var: "path" }] };
+    await assert.rejects(() => runJsonLogicQuery(vaultRoot, long, undefined, limits()), SearchLimitError);
+  });
+});
+
+test("search limits: query size, depth and node count are capped", async () => {
+  await withTempVault(async (vaultRoot) => {
+    await writeNote(vaultRoot, "a.md", "a");
+    let deep: object = { var: "path" };
+    for (let i = 0; i < 25; i++) deep = { "!": [deep] };
+    const wide = { or: Array.from({ length: 600 }, () => false) };
+    const big = { "==": [{ var: "content" }, "y".repeat(9000)] };
+    for (const query of [deep, wide, big]) {
+      await assert.rejects(() => runJsonLogicQuery(vaultRoot, query, undefined, limits()), SearchLimitError);
+      await assert.doesNotReject(() => runJsonLogicQuery(vaultRoot, query));
+    }
+  });
+});
+
+test("search limits: a search that runs past its time budget is stopped with an error", async () => {
+  await withTempVault(async (vaultRoot) => {
+    await writeNote(vaultRoot, "a.md", "a");
+    await assert.rejects(
+      () => runJsonLogicQuery(vaultRoot, { "==": [1, 1] }, undefined, limits({ timeBudgetMs: -1 })),
+      SearchLimitError,
+    );
   });
 });
 
