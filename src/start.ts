@@ -63,7 +63,10 @@ export async function startServers(config: Config, env: NodeJS.ProcessEnv, log: 
     }
   }
 
-  const scoped = createScopedApp(config, setup.tokens, { log: log.info }).listen(setup.port);
+  // Without SCOPED_HOST the listener binds to all interfaces; the network (tailnet policy, no
+  // published port) then decides who reaches it.
+  const scopedApp = createScopedApp(config, setup.tokens, { log: log.info });
+  const scoped = setup.host === undefined ? scopedApp.listen(setup.port) : scopedApp.listen(setup.port, setup.host);
   try {
     await listen(scoped);
   } catch (error) {
@@ -71,6 +74,8 @@ export async function startServers(config: Config, env: NodeJS.ProcessEnv, log: 
     return { main };
   }
   const names = setup.tokens.map((token) => token.name).join(", ");
-  log.info(`Scoped listener on port ${(scoped.address() as AddressInfo).port} for tokens: ${names}`);
+  const bound = scoped.address() as AddressInfo;
+  const where = setup.host === undefined ? "all interfaces" : bound.address;
+  log.info(`Scoped listener on port ${bound.port} (${where}) for tokens: ${names}`);
   return { main, scoped };
 }
