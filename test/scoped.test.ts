@@ -335,16 +335,48 @@ test("scoped vault_write: a valid note is written with the server's front matter
   });
 });
 
-test("scoped vault_write turns JavaScript front matter into plain YAML front matter", async () => {
+test("scoped vault_write refuses a note with JavaScript front matter instead of dropping the block", async () => {
   await withScopedServer([makeScopedToken()], async ({ baseUrl, vaultRoot }) => {
-    const result = await callTool(baseUrl, "vault_write", {
-      path: `${WRITE_DIR}/js.md`,
-      content: "---js\n{ title: 'x' }\n---\nBody\n",
-    });
-    assert.equal(result.isError, false, result.text);
-    const raw = await readFile(path.join(vaultRoot, WRITE_DIR, "js.md"), "utf-8");
-    assert.ok(raw.startsWith("---\n"));
-    assert.doesNotMatch(raw, /---js/);
+    for (const opener of ["---js", "---javascript", "--- JS"]) {
+      const result = await callTool(baseUrl, "vault_write", {
+        path: `${WRITE_DIR}/js.md`,
+        content: `${opener}\n{ title: 'x' }\n---\nBody\n`,
+      });
+      assert.equal(result.isError, true, opener);
+      assert.match(result.text, /JavaScript front matter/);
+    }
+    assert.equal(await exists(path.join(vaultRoot, WRITE_DIR, "js.md")), false);
+  });
+});
+
+test("main listener vault_patch refuses a note with JavaScript front matter and leaves it unchanged", async () => {
+  await withTestServer(async (baseUrl, config) => {
+    const original = "---js\n{ title: 'x' }\n---\n# Section\ntext\n";
+    await writeFile(path.join(config.VAULT_PATH, "js.md"), original);
+    for (const targetType of ["heading", "frontmatter"]) {
+      const res = await mcpRequest(
+        baseUrl,
+        config.TOKEN_INTERNAL,
+        "tools/call",
+        {
+          name: "vault_patch",
+          arguments: {
+            ...patchDefaults,
+            path: "js.md",
+            targetType,
+            target: targetType === "heading" ? "Section" : "title",
+            operation: "replace",
+            content: "new",
+            createTargetIfMissing: true,
+          },
+        },
+        { "X-Forwarded-For": "100.64.0.10" },
+      );
+      const result = (res.body as { result: { isError?: boolean; content: { text: string }[] } }).result;
+      assert.equal(result.isError, true, targetType);
+      assert.match(result.content[0].text, /JavaScript front matter/);
+    }
+    assert.equal(await readFile(path.join(config.VAULT_PATH, "js.md"), "utf-8"), original);
   });
 });
 
@@ -450,6 +482,71 @@ test("scoped writes stop at writesPerHour", async () => {
     assert.match(third.text, /2 per hour/);
     assert.ok(logs.some((l) => l.includes("result=denied:write-limit")));
     assert.equal(await exists(path.join(vaultRoot, WRITE_DIR, "three.md")), false);
+  });
+});
+
+// --- front matter is never executed, also not when it is written back ---
+
+// A note whose body (after a normal YAML block) starts with a JavaScript front matter block.
+// Writing front matter back must keep that block as plain text and never evaluate it.
+const JS_IN_BODY = "---js\n{ x: (globalThis.__frontmatterEvaluated = true, 1) }\n---\n";
+const evaluatedFlag = globalThis as { __frontmatterEvaluated?: boolean };
+
+test("scoped vault_write never evaluates a JavaScript front matter block in the body", async () => {
+  delete evaluatedFlag.__frontmatterEvaluated;
+  await withScopedServer([makeScopedToken()], async ({ baseUrl, vaultRoot }) => {
+    const result = await callTool(baseUrl, "vault_write", {
+      path: `${WRITE_DIR}/js-body.md`,
+      content: `---\ntitle: t\n---\n${JS_IN_BODY}# Section\ntext\n`,
+    });
+    assert.equal(result.isError, false, result.text);
+    assert.equal(evaluatedFlag.__frontmatterEvaluated, undefined);
+    const raw = await readFile(path.join(vaultRoot, WRITE_DIR, "js-body.md"), "utf-8");
+    assert.ok(raw.includes(JS_IN_BODY), raw);
+    assert.match(raw, /^---\ntitle: t\nsource: test-agent\n/);
+  });
+});
+
+test("scoped vault_patch never evaluates a JavaScript front matter block in the body", async () => {
+  delete evaluatedFlag.__frontmatterEvaluated;
+  await withScopedServer([makeScopedToken({ frontmatter: {}, tags: [] })], async ({ baseUrl, vaultRoot }) => {
+    await mkdir(path.join(vaultRoot, WRITE_DIR), { recursive: true });
+    await writeFile(path.join(vaultRoot, WRITE_DIR, "js-body.md"), `---\ntitle: t\n---\n${JS_IN_BODY}# Section\ntext\n`);
+    const result = await callTool(baseUrl, "vault_patch", {
+      ...patchDefaults,
+      path: `${WRITE_DIR}/js-body.md`,
+      targetType: "heading",
+      target: "Section",
+      operation: "append",
+      content: "more",
+    });
+    assert.equal(result.isError, false, result.text);
+    assert.equal(evaluatedFlag.__frontmatterEvaluated, undefined);
+    const raw = await readFile(path.join(vaultRoot, WRITE_DIR, "js-body.md"), "utf-8");
+    assert.ok(raw.includes(JS_IN_BODY), raw);
+    assert.match(raw, /more/);
+  });
+});
+
+test("main listener vault_patch never evaluates a JavaScript front matter block in the body", async () => {
+  delete evaluatedFlag.__frontmatterEvaluated;
+  await withTestServer(async (baseUrl, config) => {
+    await writeFile(path.join(config.VAULT_PATH, "js-body.md"), `---\ntitle: t\n---\n${JS_IN_BODY}# Section\ntext\n`);
+    const res = await mcpRequest(
+      baseUrl,
+      config.TOKEN_INTERNAL,
+      "tools/call",
+      {
+        name: "vault_patch",
+        arguments: { ...patchDefaults, path: "js-body.md", targetType: "heading", target: "Section", operation: "append", content: "more" },
+      },
+      { "X-Forwarded-For": "100.64.0.10" },
+    );
+    assert.equal(res.status, 200);
+    assert.equal(evaluatedFlag.__frontmatterEvaluated, undefined);
+    const raw = await readFile(path.join(config.VAULT_PATH, "js-body.md"), "utf-8");
+    assert.ok(raw.includes(JS_IN_BODY), raw);
+    assert.match(raw, /^---\ntitle: t\n---\n/);
   });
 });
 

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { parseFrontmatter, stringifyFrontmatter } from "../vault/frontmatter.js";
+import { JAVASCRIPT_FRONTMATTER_ERROR, parseFrontmatter, stringifyFrontmatter } from "../vault/frontmatter.js";
 import { readNote, writeNote } from "../vault/fs.js";
 import { patchHeadingSection } from "./heading.js";
 
@@ -66,15 +66,16 @@ export function applyPatch(raw: string, input: VaultPatchInput): string {
     throw new Error("targetType 'block' is not supported in v1");
   }
 
+  const { content, data, javascript } = parseFrontmatter(raw, input.path);
+  // Patching would rewrite the note without that block: refuse instead of dropping it silently.
+  if (javascript) throw new Error(JAVASCRIPT_FRONTMATTER_ERROR);
   const value = parseContentValue(input);
 
   if (input.targetType === "frontmatter") {
-    const { content, data } = parseFrontmatter(raw);
     const nextData = patchFrontmatterValue(data, input.target, input.operation, value, input.createTargetIfMissing);
     return stringifyFrontmatter(content, nextData);
   }
 
-  const { content, data } = parseFrontmatter(raw);
   const patchedContent = patchHeadingSection(content, input.target, input.targetDelimiter, {
     operation: input.operation,
     newContent: typeof value === "string" ? value : JSON.stringify(value),

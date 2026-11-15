@@ -64,8 +64,8 @@ function consumeWrite(ctx: ScopedToolContext): void {
   }
 }
 
-function enforce(ctx: ScopedToolContext, text: string): string {
-  return enforceFrontmatter(text, ctx.token.frontmatter, ctx.token.tags);
+function enforce(ctx: ScopedToolContext, text: string, source: string): string {
+  return enforceFrontmatter(text, ctx.token.frontmatter, ctx.token.tags, source);
 }
 
 /** The five vault tools, bound to one scoped token: read everything not denied, write one folder. */
@@ -94,7 +94,7 @@ export function registerScopedTools(server: McpServer, ctx: ScopedToolContext): 
       audited(ctx, "vault_write", input.path, async () => {
         const inner = checkWritePath(writeDir, input.path);
         checkNoteSize(input.content);
-        const output = enforce(ctx, input.content);
+        const output = enforce(ctx, input.content, input.path);
         checkNoteSize(output);
         consumeWrite(ctx);
         const target = await resolveWriteTarget(vault, writeDir, inner, { createDirs: true });
@@ -113,7 +113,7 @@ export function registerScopedTools(server: McpServer, ctx: ScopedToolContext): 
         const target = await resolveWriteTarget(vault, writeDir, inner, { createDirs: false });
         const patched = applyPatch(await readFileNoFollow(target), input);
         checkNoteSize(patched);
-        const output = enforce(ctx, patched);
+        const output = enforce(ctx, patched, input.path);
         checkNoteSize(output);
         consumeWrite(ctx);
         await writeFileNoFollow(target, output);

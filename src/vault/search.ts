@@ -47,7 +47,7 @@ async function listMarkdownFiles(vaultRoot: string, include?: NoteFilter): Promi
 
 async function parseNote(vaultRoot: string, relativePath: string): Promise<Omit<NoteJson, "backlinks">> {
   const raw = await readNote(vaultRoot, relativePath);
-  const { content, data } = parseFrontmatter(raw);
+  const { content, data } = parseFrontmatter(raw, relativePath);
   const frontmatterTags = Array.isArray(data.tags) ? data.tags.map(String) : [];
   const tags = [...new Set([...frontmatterTags, ...extractInlineTags(content)])];
   const stat = await statNote(vaultRoot, relativePath);
