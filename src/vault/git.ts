@@ -113,7 +113,22 @@ export interface SyncResult {
  * `{ synced: false }` (or `{ synced: false, conflict: true, conflictPath }` on a real content
  * conflict) instead of reporting the whole tool call as failed.
  */
-export async function commitAndPush(vaultRoot: string, relativePath: string, message: string): Promise<SyncResult> {
+export interface CommitOptions {
+  /**
+   * Writes the quarantined copy of a conflicting note and returns its vault-relative path.
+   * Default: `<name>.claude-conflict.<timestamp>.md` next to the note, plain writeFile.
+   */
+  quarantine?: (relativePath: string, ourContent: string) => Promise<string>;
+  /** Message of the quarantine commit. Default: `conflict: quarantined <path>`. */
+  conflictMessage?: (relativePath: string) => string;
+}
+
+export async function commitAndPush(
+  vaultRoot: string,
+  relativePath: string,
+  message: string,
+  options: CommitOptions = {},
+): Promise<SyncResult> {
   return withGitLock(async () => {
     try {
       await git(vaultRoot, ["add", "--", relativePath]);
@@ -143,9 +158,12 @@ export async function commitAndPush(vaultRoot: string, relativePath: string, mes
         const ourContent = await readFile(path.join(vaultRoot, relativePath), "utf-8");
         const branch = await currentBranch(vaultRoot);
         await git(vaultRoot, ["reset", "--hard", `origin/${branch}`]);
-        const conflictPath = await quarantineConflict(vaultRoot, relativePath, ourContent);
+        const conflictPath = options.quarantine
+          ? await options.quarantine(relativePath, ourContent)
+          : await quarantineConflict(vaultRoot, relativePath, ourContent);
         await git(vaultRoot, ["add", "--", conflictPath]);
-        await git(vaultRoot, ["commit", "-m", `conflict: quarantined ${relativePath}`]);
+        const conflictMessage = options.conflictMessage?.(relativePath) ?? `conflict: quarantined ${relativePath}`;
+        await git(vaultRoot, ["commit", "-m", conflictMessage]);
         await git(vaultRoot, ["push"]);
         return { synced: false, conflict: true, conflictPath };
       } catch (recoveryError) {
