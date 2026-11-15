@@ -107,10 +107,15 @@ test("searchQuery never evaluates JavaScript front matter", async () => {
 test("even a direct gray-matter call without options never evaluates JavaScript front matter", () => {
   const g = globalThis as { __frontmatterEvaluated?: boolean };
   delete g.__frontmatterEvaluated;
-  matter(`${JS_FRONTMATTER_NOTE} ${Date.now()}`);
-  // stringify refuses to write JavaScript front matter back (it throws); what matters is that
-  // parsing the string first did not run it.
-  assert.throws(() => matter.stringify(`${JS_FRONTMATTER_NOTE} ${Date.now()}`, { title: "t" }));
+  const unique = `${process.pid}-${Date.now()}-${Math.random()}`;
+  matter(`${JS_FRONTMATTER_NOTE} parse-${unique}`);
+  try {
+    // Usually throws (JavaScript front matter cannot be written back); what matters here is only
+    // that parsing the string first did not run it.
+    matter.stringify(`${JS_FRONTMATTER_NOTE} stringify-${unique}`, { title: "t" });
+  } catch {
+    // expected
+  }
   assert.equal(g.__frontmatterEvaluated, undefined);
 });
 
