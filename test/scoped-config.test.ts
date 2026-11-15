@@ -61,7 +61,7 @@ test("all optional fields are taken over when given", () => {
     envWith([
       tokenEntry({
         allowFrom: ["::ffff:192.0.2.10", "100.64.0.10"],
-        writeDir: "notes-inbox/agent/",
+        writeDir: "notes-inbox/assistant/",
         readDeny: ["private/", "./projects/secret-plan.md"],
         expiresAt: "2099-01-01T12:00:00Z",
         writesPerHour: 5,
@@ -75,7 +75,7 @@ test("all optional fields are taken over when given", () => {
   if (setup.status !== "enabled") return;
   const [token] = setup.tokens;
   assert.deepEqual(token.allowFrom, ["192.0.2.10", "100.64.0.10"]);
-  assert.equal(token.writeDir, "notes-inbox/agent");
+  assert.equal(token.writeDir, "notes-inbox/assistant");
   assert.deepEqual(token.readDeny, ["private", "projects/secret-plan.md"]);
   assert.equal(token.expiresAt.toISOString(), "2099-01-01T12:00:00.000Z");
   assert.equal(token.writesPerHour, 5);
