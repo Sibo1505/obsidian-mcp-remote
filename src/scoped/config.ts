@@ -3,6 +3,7 @@ import path from "node:path";
 import { z } from "zod";
 import type { Config } from "../config.js";
 import { writeDirProblem } from "./names.js";
+import { isReadDenied } from "./guard.js";
 
 /** One scoped token after validation: everything the scoped listener needs to decide a request. */
 export interface ScopedToken {
@@ -23,12 +24,30 @@ export interface ScopedToken {
 export type ScopedSetup =
   | { status: "disabled" }
   | { status: "invalid"; errors: string[] }
-  | { status: "enabled"; port: number; tokens: ScopedToken[] };
+  /** host: bind address (SCOPED_HOST); undefined means all interfaces. */
+  | { status: "enabled"; port: number; host?: string; tokens: ScopedToken[] };
 
-/** Peer address as the scoped listener compares it: IPv4-mapped IPv6 unwrapped, lowercase. */
+/**
+ * Address as the scoped listener compares it, for both the config and the socket: IPv4-mapped
+ * IPv6 unwrapped to dotted IPv4, IPv6 in canonical form (lowercase, zeros compressed), so
+ * "FD7A:115C:A1E0:0:0:0:0:1" in the config matches the socket's "fd7a:115c:a1e0::1".
+ */
 export function normalizeAddress(address: string): string {
   const lower = address.toLowerCase();
-  return lower.startsWith("::ffff:") && net.isIPv4(lower.slice("::ffff:".length)) ? lower.slice("::ffff:".length) : lower;
+  if (lower.startsWith("::ffff:") && net.isIPv4(lower.slice("::ffff:".length))) return lower.slice("::ffff:".length);
+  if (!net.isIPv6(lower)) return lower;
+  let canonical: string;
+  try {
+    canonical = new URL(`http://[${lower}]/`).hostname.slice(1, -1);
+  } catch {
+    return lower; // e.g. a zone index ("fe80::1%eth0"), which URL does not accept
+  }
+  // URL writes IPv4-mapped addresses in hex (::ffff:c000:20a): turn those back into dotted IPv4.
+  const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(canonical);
+  if (!mapped) return canonical;
+  const high = parseInt(mapped[1], 16);
+  const low = parseInt(mapped[2], 16);
+  return `${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`;
 }
 
 /** "a\\b/./c/" -> "a/b/c"; returns undefined for anything that is not a plain path inside the vault. */
@@ -120,6 +139,11 @@ export function loadScopedConfig(env: NodeJS.ProcessEnv, mainConfig: Config): Sc
     errors.push("SCOPED_PORT: must differ from PORT");
   }
 
+  const host = env.SCOPED_HOST === "" ? undefined : env.SCOPED_HOST;
+  if (host !== undefined && net.isIP(host) === 0) {
+    errors.push("SCOPED_HOST: must be an IP address to bind to (leave it empty for all interfaces)");
+  }
+
   const rawTokens = env.SCOPED_TOKENS_JSON;
   let parsedJson: unknown;
   if (rawTokens === undefined || rawTokens === "") {
@@ -149,6 +173,13 @@ export function loadScopedConfig(env: NodeJS.ProcessEnv, mainConfig: Config): Sc
     const where = `SCOPED_TOKENS_JSON[${index}]`;
     if (seenNames.has(entry.name)) errors.push(`${where}.name: "${entry.name}" is used twice`);
     seenNames.add(entry.name);
+
+    // A token must be able to read what it writes, and a denied note must not be writable.
+    entry.readDeny.forEach((denied, denyIndex) => {
+      if (isReadDenied([denied], entry.writeDir) || isReadDenied([entry.writeDir], denied)) {
+        errors.push(`${where}.readDeny[${denyIndex}]: overlaps writeDir "${entry.writeDir}"`);
+      }
+    });
 
     const secret = env[entry.tokenEnv];
     if (secret === undefined || secret === "") {
@@ -183,5 +214,5 @@ export function loadScopedConfig(env: NodeJS.ProcessEnv, mainConfig: Config): Sc
   });
 
   if (errors.length > 0 || !port.success) return { status: "invalid", errors };
-  return { status: "enabled", port: port.data, tokens };
+  return { status: "enabled", port: port.data, host, tokens };
 }
