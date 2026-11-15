@@ -8,8 +8,27 @@
 const DIR_SEGMENT_RE = /^[a-z0-9][a-z0-9-]*$/;
 const FILE_NAME_RE = /^[a-z0-9][a-z0-9-]*\.md$/;
 
-/** Names agent tools read as instructions (CLAUDE.md, claude-*.md, AGENTS.md, ...). */
-const RESERVED_PREFIXES = ["claude", "agents"];
+/**
+ * Name prefixes of files that coding agents and their tools load as instructions or rules, in any
+ * spelling (a case-insensitive file system treats gemini.md as GEMINI.md): CLAUDE.md, AGENT.md /
+ * AGENTS.md, GEMINI.md, QWEN.md, CRUSH.md, WARP.md, copilot-instructions.md, cursor and windsurf
+ * rules, Cline rules, CONVENTIONS.md, README.md. This is a known-names list, not a guarantee: a
+ * tool that reads other names is not covered (see the docs' limits).
+ */
+export const RESERVED_PREFIXES = [
+  "claude",
+  "agent",
+  "gemini",
+  "qwen",
+  "crush",
+  "warp",
+  "copilot",
+  "cursor",
+  "windsurf",
+  "cline",
+  "conventions",
+  "readme",
+];
 
 /** Device names Windows refuses as file or folder names, with or without an extension. */
 const WINDOWS_RESERVED = new Set([
@@ -17,8 +36,8 @@ const WINDOWS_RESERVED = new Set([
   "prn",
   "aux",
   "nul",
-  ...Array.from({ length: 9 }, (_, i) => `com${i + 1}`),
-  ...Array.from({ length: 9 }, (_, i) => `lpt${i + 1}`),
+  ...Array.from({ length: 10 }, (_, i) => `com${i}`),
+  ...Array.from({ length: 10 }, (_, i) => `lpt${i}`),
 ]);
 
 export const MAX_SEGMENT_LENGTH = 100;
@@ -36,9 +55,10 @@ export function segmentProblem(segment: string, kind: "dir" | "file"): string | 
   if (kind === "dir" && !DIR_SEGMENT_RE.test(segment)) {
     return `folder name "${segment}" must be lowercase letters, digits and "-"`;
   }
-  const stem = kind === "file" ? segment.slice(0, -".md".length) : segment;
-  if (RESERVED_PREFIXES.some((prefix) => stem.startsWith(prefix))) {
-    return `names starting with ${RESERVED_PREFIXES.map((p) => `"${p}"`).join(" or ")} are not allowed`;
+  const stem = (kind === "file" ? segment.slice(0, -".md".length) : segment).toLowerCase();
+  const reserved = RESERVED_PREFIXES.find((prefix) => stem.startsWith(prefix));
+  if (reserved) {
+    return `names starting with "${reserved}" are not allowed (agent instruction files)`;
   }
   if (WINDOWS_RESERVED.has(stem)) {
     return `"${stem}" is a reserved name on Windows`;
