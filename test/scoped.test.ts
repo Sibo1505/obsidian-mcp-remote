@@ -455,6 +455,34 @@ test("scoped vault_write: a valid note is written with the server's front matter
   });
 });
 
+test("a scoped write that conflicts is quarantined under the scoped naming rules and committed under the token's name", async () => {
+  await withGitFixture(async (vaultRoot, otherClone) => {
+    await withScopedServer(
+      [makeScopedToken()],
+      async ({ baseUrl }) => {
+        const notePath = `${WRITE_DIR}/clash.md`;
+        assert.equal((await callTool(baseUrl, "vault_write", { path: notePath, content: "first\n" })).isError, false);
+
+        await gitIn(otherClone, ["pull"]);
+        await writeFile(path.join(otherClone, WRITE_DIR, "clash.md"), "edited on another device\n");
+        await gitIn(otherClone, ["add", "."]);
+        await gitIn(otherClone, ["commit", "-m", "other device edits clash"]);
+        await gitIn(otherClone, ["push", "origin", "main"]);
+
+        const result = await callTool(baseUrl, "vault_write", { path: notePath, content: "mine\n" });
+        const sync = JSON.parse(result.text) as { conflict?: boolean; conflictPath?: string };
+        assert.equal(sync.conflict, true, result.text);
+        assert.match(sync.conflictPath ?? "", /^notes-inbox\/clash-conflict-\d{14}\.md$/);
+        assert.match(await readFile(path.join(vaultRoot, sync.conflictPath!), "utf-8"), /mine/);
+
+        const { stdout } = await gitIn(vaultRoot, ["log", "origin/main", "-1", "--format=%s"]);
+        assert.equal(stdout.trim(), `test-agent: conflict quarantined ${notePath}`);
+      },
+      { vaultRoot },
+    );
+  });
+});
+
 test("scoped vault_write refuses a note with JavaScript front matter instead of dropping the block", async () => {
   await withScopedServer([makeScopedToken()], async ({ baseUrl, vaultRoot }) => {
     for (const opener of ["---js", "---javascript", "--- JS"]) {
