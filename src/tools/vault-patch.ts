@@ -1,5 +1,5 @@
 import { z } from "zod";
-import matter from "gray-matter";
+import { parseFrontmatter, stringifyFrontmatter } from "../vault/frontmatter.js";
 import { readNote, writeNote } from "../vault/fs.js";
 import { patchHeadingSection } from "./heading.js";
 
@@ -69,14 +69,14 @@ export async function vaultPatch(vaultRoot: string, input: VaultPatchInput) {
   const value = parseContentValue(input);
 
   if (input.targetType === "frontmatter") {
-    const { content, data } = matter(raw);
+    const { content, data } = parseFrontmatter(raw);
     const nextData = patchFrontmatterValue(data, input.target, input.operation, value, input.createTargetIfMissing);
-    const output = matter.stringify(content, nextData);
+    const output = stringifyFrontmatter(content, nextData);
     await writeNote(vaultRoot, input.path, output);
     return { path: input.path, patched: true };
   }
 
-  const { content, data } = matter(raw);
+  const { content, data } = parseFrontmatter(raw);
   const patchedContent = patchHeadingSection(content, input.target, input.targetDelimiter, {
     operation: input.operation,
     newContent: typeof value === "string" ? value : JSON.stringify(value),
@@ -85,7 +85,7 @@ export async function vaultPatch(vaultRoot: string, input: VaultPatchInput) {
     trimTargetWhitespace: input.trimTargetWhitespace,
     rejectIfContentPreexists: input.rejectIfContentPreexists,
   });
-  const output = Object.keys(data).length > 0 ? matter.stringify(patchedContent, data) : patchedContent;
+  const output = Object.keys(data).length > 0 ? stringifyFrontmatter(patchedContent, data) : patchedContent;
   await writeNote(vaultRoot, input.path, output);
   return { path: input.path, patched: true };
 }

@@ -72,6 +72,32 @@ test("vaultRead with targetType heading throws when heading is missing", async (
   });
 });
 
+// gray-matter ships a "javascript" front matter engine that runs the block through eval() when a
+// note starts with "---js" or "---javascript". Anyone who can write a note could otherwise run code
+// inside this server on the next read or search.
+const JS_FRONTMATTER_NOTE = "---js\n{ title: (globalThis.__frontmatterEvaluated = true, 'x') }\n---\nBody";
+
+test("vaultRead never evaluates JavaScript front matter", async () => {
+  await withTempVault(async (vaultRoot) => {
+    const g = globalThis as { __frontmatterEvaluated?: boolean };
+    delete g.__frontmatterEvaluated;
+    await writeNote(vaultRoot, "note.md", JS_FRONTMATTER_NOTE);
+    const result = await vaultRead(vaultRoot, { path: "note.md" });
+    assert.equal(g.__frontmatterEvaluated, undefined);
+    assert.deepEqual(result.frontmatter, {});
+  });
+});
+
+test("searchQuery never evaluates JavaScript front matter", async () => {
+  await withTempVault(async (vaultRoot) => {
+    const g = globalThis as { __frontmatterEvaluated?: boolean };
+    delete g.__frontmatterEvaluated;
+    await writeNote(vaultRoot, "note.md", JS_FRONTMATTER_NOTE);
+    await searchQuery(vaultRoot, { query: { "==": [1, 1] } });
+    assert.equal(g.__frontmatterEvaluated, undefined);
+  });
+});
+
 test("vaultRead with targetType block explicitly rejects instead of silently falling back", async () => {
   await withTempVault(async (vaultRoot) => {
     await writeNote(vaultRoot, "note.md", "Body ^block-id");
