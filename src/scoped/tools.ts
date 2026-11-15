@@ -9,9 +9,9 @@ import { vaultListSchema } from "../tools/vault-list.js";
 import { searchQuerySchema } from "../tools/search-query.js";
 import { hasBlockedSegment, listDir, resolveInVault } from "../vault/fs.js";
 import { runJsonLogicQuery, SCOPED_SEARCH_LIMITS, SearchLimitError } from "../vault/search.js";
-import { commitAndPush } from "../vault/git.js";
+import { commitAndPush, type CommitOptions } from "../vault/git.js";
 import type { ScopedToken } from "./config.js";
-import { MAX_DEPTH_BELOW_WRITE_DIR } from "./names.js";
+import { MAX_DEPTH_BELOW_WRITE_DIR, MAX_SEGMENT_LENGTH } from "./names.js";
 import { enforceFrontmatter, type WriteBudget } from "./enforce.js";
 import {
   MAX_NOTE_BYTES,
@@ -84,6 +84,35 @@ function consumeWrite(ctx: ScopedToolContext): void {
   }
 }
 
+/** `20261115203001` for 2026-11-15 20:30:01 UTC. */
+function compactUtcStamp(date = new Date()): string {
+  return date.toISOString().replace(/[-:T]/g, "").slice(0, 14);
+}
+
+/**
+ * On a rebase conflict the server keeps the scoped token's version under a new name. That copy
+ * follows the same rules as any scoped write: `<stem>-conflict-<yyyymmddhhmmss>.md` next to the
+ * note, checked path, no symlink on the way, opened without following one, and a commit message
+ * that names the token.
+ */
+function commitOptions(ctx: ScopedToolContext): CommitOptions {
+  const { writeDir, name } = ctx.token;
+  return {
+    quarantine: async (relativePath, ourContent) => {
+      const parts = relativePath.split("/");
+      const fileName = parts.pop()!;
+      const suffix = `-conflict-${compactUtcStamp()}.md`;
+      const stem = fileName.slice(0, -".md".length).slice(0, MAX_SEGMENT_LENGTH - suffix.length);
+      const conflictPath = [...parts, `${stem}${suffix}`].join("/");
+      const inner = checkWritePath(writeDir, conflictPath);
+      const target = await resolveWriteTarget(ctx.config.VAULT_PATH, writeDir, inner, { createDirs: true });
+      await writeFileNoFollow(target, ourContent);
+      return conflictPath;
+    },
+    conflictMessage: (relativePath) => `${name}: conflict quarantined ${relativePath}`,
+  };
+}
+
 function enforce(ctx: ScopedToolContext, text: string, source: string): string {
   return enforceFrontmatter(text, ctx.token.frontmatter, ctx.token.tags, source);
 }
@@ -119,7 +148,7 @@ export function registerScopedTools(server: McpServer, ctx: ScopedToolContext): 
         consumeWrite(ctx);
         const target = await resolveWriteTarget(vault, writeDir, inner, { createDirs: true });
         await writeFileNoFollow(target, output);
-        const sync = await commitAndPush(vault, input.path, `${ctx.token.name}: vault_write ${input.path}`);
+        const sync = await commitAndPush(vault, input.path, `${ctx.token.name}: vault_write ${input.path}`, commitOptions(ctx));
         return { path: input.path, written: true, ...sync };
       }),
   );
@@ -137,7 +166,7 @@ export function registerScopedTools(server: McpServer, ctx: ScopedToolContext): 
         checkNoteSize(output);
         consumeWrite(ctx);
         await writeFileNoFollow(target, output);
-        const sync = await commitAndPush(vault, input.path, `${ctx.token.name}: vault_patch ${input.path}`);
+        const sync = await commitAndPush(vault, input.path, `${ctx.token.name}: vault_patch ${input.path}`, commitOptions(ctx));
         return { path: input.path, patched: true, ...sync };
       }),
   );
