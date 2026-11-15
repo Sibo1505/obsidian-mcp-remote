@@ -30,7 +30,7 @@ COPY --from=build /app/dist ./dist
 # gitignored, so copying public/ from a clean checkout would ship the pages without their styles.
 COPY --from=build /app/public ./public
 USER appuser
-# /vault is owned by the host's checkout user (debian), not appuser - git 2.35+ refuses to touch a
+# /vault may be owned by the host's checkout user (debian), not appuser - git 2.35+ refuses to touch a
 # repo it doesn't own (CVE-2022-24765 hardening) unless explicitly told it's safe. Baked into the
 # image at build time (writes appuser's ~/.gitconfig) since the container's rootfs is read_only at
 # runtime and couldn't take a `git config --global` call there.
