@@ -1,6 +1,6 @@
 import path from "node:path";
 import fg from "fast-glob";
-import matter from "gray-matter";
+import { parseFrontmatter } from "./frontmatter.js";
 import jsonLogic from "json-logic-js";
 import { Minimatch } from "minimatch";
 import safeRegex from "safe-regex";
@@ -41,7 +41,7 @@ async function listMarkdownFiles(vaultRoot: string): Promise<string[]> {
 
 async function parseNote(vaultRoot: string, relativePath: string): Promise<Omit<NoteJson, "backlinks">> {
   const raw = await readNote(vaultRoot, relativePath);
-  const { content, data } = matter(raw);
+  const { content, data } = parseFrontmatter(raw);
   const frontmatterTags = Array.isArray(data.tags) ? data.tags.map(String) : [];
   const tags = [...new Set([...frontmatterTags, ...extractInlineTags(content)])];
   const stat = await statNote(vaultRoot, relativePath);
