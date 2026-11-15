@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import { mkdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { base64url, gitIn, withGitFixture, withTestServer } from "./helpers.js";
+import { throttlePull } from "../src/scoped/pull.js";
 import {
   OTHER_SCOPED_SECRET,
   SCOPED_SECRET,
@@ -122,6 +123,110 @@ test("scoped listener: OAuth, passkey and discovery routes do not exist there", 
       assert.equal(res.status, 404, `${method} ${route}`);
     }
   });
+});
+
+test("scoped listener: more than 60 requests a minute from one address get 429", async () => {
+  await withScopedServer([makeScopedToken()], async ({ baseUrl }) => {
+    const statuses: number[] = [];
+    for (let i = 0; i < 61; i++) statuses.push((await mcpRequest(baseUrl, SCOPED_SECRET, "tools/list")).status);
+    assert.deepEqual(statuses.slice(0, 60), Array(60).fill(200));
+    assert.equal(statuses[60], 429);
+  });
+});
+
+test("scoped listener: a JSON-RPC batch is refused with 400 and runs none of its calls", async () => {
+  await withScopedServer([makeScopedToken()], async ({ baseUrl, vaultRoot, logs }) => {
+    const call = (id: number) => ({
+      jsonrpc: "2.0",
+      id,
+      method: "tools/call",
+      params: { name: "vault_write", arguments: { path: `${WRITE_DIR}/batch-${id}.md`, content: "x" } },
+    });
+    const res = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+        Authorization: `Bearer ${SCOPED_SECRET}`,
+      },
+      body: JSON.stringify([call(1), call(2)]),
+    });
+    assert.equal(res.status, 400);
+    assert.equal(await exists(path.join(vaultRoot, WRITE_DIR)), false);
+    assert.ok(logs.some((l) => l.includes("token=test-agent") && l.includes("result=denied:batch")));
+  });
+});
+
+test("scoped listener: every authenticated request without a tool call writes one line with its method", async () => {
+  await withScopedServer([makeScopedToken()], async ({ baseUrl, logs }) => {
+    await mcpRequest(baseUrl, SCOPED_SECRET, "initialize", {
+      protocolVersion: "2025-06-18",
+      capabilities: {},
+      clientInfo: { name: "test", version: "1" },
+    });
+    await mcpRequest(baseUrl, SCOPED_SECRET, "tools/list");
+    await mcpRequest(baseUrl, SCOPED_SECRET, "tools/call", { name: "no_such_tool", arguments: {} });
+    await callTool(baseUrl, "vault_list", { path: "" });
+    assert.deepEqual(
+      logs.filter((l) => l.startsWith("scoped token=")),
+      [
+        "scoped token=test-agent method=initialize",
+        "scoped token=test-agent method=tools/list",
+        "scoped token=test-agent method=tools/call",
+        'scoped token=test-agent tool=vault_list path="" result=ok',
+      ],
+    );
+  });
+});
+
+test("scoped errors never show server paths to the client; only the error code goes to the log", async () => {
+  await withScopedServer([makeScopedToken()], async ({ baseUrl, vaultRoot, logs }) => {
+    const result = await callTool(baseUrl, "vault_read", { path: "missing.md" });
+    assert.equal(result.isError, true);
+    assert.equal(result.text, "Not found: missing.md");
+    assert.ok(!result.text.includes(vaultRoot));
+    assert.ok(logs.includes('scoped token=test-agent tool=vault_read path="missing.md" result=error:ENOENT'));
+    // Ordinary tool errors (no system error code) still explain themselves.
+    await callTool(baseUrl, "vault_write", { path: `${WRITE_DIR}/note.md`, content: "# Note\n" });
+    const patch = await callTool(baseUrl, "vault_patch", {
+      ...patchDefaults,
+      path: `${WRITE_DIR}/note.md`,
+      targetType: "heading",
+      target: "Missing",
+      operation: "append",
+      content: "x",
+    });
+    assert.equal(patch.isError, true);
+    assert.match(patch.text, /Heading not found: Missing/);
+  });
+});
+
+test("scoped reads share pulls: concurrent readers wait for one pull, then there is none for 10 seconds", async () => {
+  let pulls = 0;
+  let release = () => {};
+  let now = 0;
+  const throttled = throttlePull(
+    () => {
+      pulls++;
+      return new Promise<void>((resolve) => (release = resolve));
+    },
+    10_000,
+    () => now,
+  );
+  const first = throttled();
+  const second = throttled();
+  assert.equal(pulls, 1);
+  assert.equal(first, second);
+  release();
+  await first;
+  now = 9_999;
+  await throttled();
+  assert.equal(pulls, 1);
+  now = 10_000;
+  const third = throttled();
+  assert.equal(pulls, 2);
+  release();
+  await third;
 });
 
 test("main listener: a scoped token is rejected there, even from a tailnet address", async () => {
