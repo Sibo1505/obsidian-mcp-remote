@@ -1,4 +1,7 @@
-FROM node:20-slim AS build
+# Node 24 LTS on Debian 13 (trixie), pinned to an exact version and its multi-arch index digest so a
+# rebuild gets the same base image instead of whatever the tag points to on that day. Bump both
+# stages together.
+FROM node:24.22.2-trixie-slim@sha256:0820eaa85e07d0490446dd01d14707e17e6108a36988cf374899cd057eb3812d AS build
 WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm install
@@ -9,13 +12,16 @@ COPY src ./src
 COPY public ./public
 RUN npm run build
 
-FROM node:20-slim
+FROM node:24.22.2-trixie-slim@sha256:0820eaa85e07d0490446dd01d14707e17e6108a36988cf374899cd057eb3812d
 WORKDIR /app
 ENV NODE_ENV=production
 # vault/git.ts shells out to the git CLI at runtime (commit+push after writes, JIT pull before
-# reads) — node:20-slim doesn't include it, unlike the build stage's toolchain.
+# reads) — the slim base image doesn't include it, unlike the build stage's toolchain.
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
-RUN useradd --system --create-home appuser
+# uid/gid 999 pinned rather than left to useradd: the vault checkout gets chowned to 999 (see
+# docs/*/installation.md) and everything in /data was written as 999, so a base image that hands out
+# a different system uid would make writes fail with EACCES. Pinned, a taken id fails the build.
+RUN groupadd --system --gid 999 appuser && useradd --system --uid 999 --gid appuser --create-home appuser
 RUN mkdir -p /data && chown appuser:appuser /data
 COPY package.json package-lock.json* ./
 RUN npm install --omit=dev
