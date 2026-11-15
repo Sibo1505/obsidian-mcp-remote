@@ -16,6 +16,8 @@ keep Obsidian running, no Local REST API plugin, works from any device.
 - Its own network identity (Tailscale sidecar) instead of a Docker network shared with other
   services
 - Push notifications on suspicious login attempts
+- Optional [scoped tokens](docs/en/scoped-tokens.md): a separate port where an agent on another
+  machine can read the vault but write to only one folder
 - CI security scanning (CodeQL, gitleaks, Dependabot) active from day one
 
 Details: [How the server works](docs/en/how-it-works.md).
