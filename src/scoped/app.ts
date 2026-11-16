@@ -62,19 +62,36 @@ export function createScopedApp(config: Config, tokens: ScopedToken[], options: 
     const method =
       typeof message.method === "string" && /^[\w./$-]{1,64}$/.test(message.method) ? message.method : "invalid";
     const toolName = message.params?.name;
-    if (method !== "tools/call" || typeof toolName !== "string" || !SCOPED_TOOL_NAMES.has(toolName)) {
-      log(`scoped token=${token.name} method=${method}`);
-    }
+    const toolCall = method === "tools/call" && typeof toolName === "string" && SCOPED_TOOL_NAMES.has(toolName);
+    if (!toolCall) log(`scoped token=${token.name} method=${method}`);
+
+    // A tool call can be refused before its tool runs (invalid arguments, a client the transport
+    // will not answer). Then the tool writes no line, so this one does, before the answer leaves.
+    let reachedTool = false;
+    let accounted = !toolCall;
+    const account = () => {
+      if (accounted) return;
+      accounted = true;
+      if (!reachedTool) log(`scoped token=${token.name} method=tools/call tool=${String(toolName)} result=rejected`);
+    };
 
     const server = new McpServer({ name: "obsidian-mcp-remote", version: "0.1.0" });
-    registerScopedTools(server, { config, token, budget, log, pull });
+    registerScopedTools(server, { config, token, budget, log, pull, reached: () => (reachedTool = true) });
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+    const send = transport.send.bind(transport);
+    transport.send = (reply, sendOptions) => {
+      account();
+      return send(reply, sendOptions);
+    };
     res.on("close", () => {
+      account();
       transport.close();
       server.close();
     });
     await server.connect(transport);
     await transport.handleRequest(req, res, req.body);
+    // The transport answered by itself (406, 415, ...) without handing the message to the server.
+    if (res.writableEnded) account();
   });
 
   app.use((_req, res) => {
