@@ -20,6 +20,7 @@ export function makeScopedToken(overrides: Partial<ScopedToken> = {}): ScopedTok
     secret: SCOPED_SECRET,
     allowFrom: ["127.0.0.1"],
     writeDir: WRITE_DIR,
+    writeDeny: [],
     readDeny: [],
     expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
     writesPerHour: 60,

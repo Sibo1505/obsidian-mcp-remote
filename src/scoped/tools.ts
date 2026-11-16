@@ -11,7 +11,13 @@ import { hasBlockedSegment, listDir, resolveInVault } from "../vault/fs.js";
 import { runJsonLogicQuery, SCOPED_SEARCH_LIMITS, SearchLimitError } from "../vault/search.js";
 import { commitAndPush, type CommitOptions } from "../vault/git.js";
 import type { ScopedToken } from "./config.js";
-import { MAX_DEPTH_BELOW_WRITE_DIR, MAX_SEGMENT_LENGTH } from "./names.js";
+import {
+  MAX_DEPTH_BELOW_WRITE_DIR,
+  MAX_DEPTH_WHOLE_VAULT,
+  MAX_NEW_FOLDERS,
+  MAX_SEGMENT_LENGTH,
+  toSafeStem,
+} from "./names.js";
 import { enforceFrontmatter, type WriteBudget } from "./enforce.js";
 import {
   MAX_NOTE_BYTES,
@@ -93,18 +99,19 @@ function compactUtcStamp(date = new Date()): string {
  * On a rebase conflict the server keeps the scoped token's version under a new name. That copy
  * follows the same rules as any scoped write: `<stem>-conflict-<yyyymmddhhmmss>.md` next to the
  * note, checked path, no symlink on the way, opened without following one, and a commit message
- * that names the token.
+ * that names the token. The stem is reduced to the names a scoped token may create, so an existing
+ * note like "My Note.md" gets "my-note-conflict-….md".
  */
 function commitOptions(ctx: ScopedToolContext): CommitOptions {
-  const { writeDir, name } = ctx.token;
+  const { writeDir, writeDeny, name } = ctx.token;
   return {
     quarantine: async (relativePath, ourContent) => {
       const parts = relativePath.split("/");
       const fileName = parts.pop()!;
       const suffix = `-conflict-${compactUtcStamp()}.md`;
-      const stem = fileName.slice(0, -".md".length).slice(0, MAX_SEGMENT_LENGTH - suffix.length);
+      const stem = toSafeStem(fileName.slice(0, -".md".length), MAX_SEGMENT_LENGTH - suffix.length);
       const conflictPath = [...parts, `${stem}${suffix}`].join("/");
-      const inner = checkWritePath(writeDir, conflictPath);
+      const inner = checkWritePath(writeDir, writeDeny, conflictPath);
       const target = await resolveWriteTarget(ctx.config.VAULT_PATH, writeDir, inner, { createDirs: true });
       await writeFileNoFollow(target, ourContent);
       return conflictPath;
@@ -117,13 +124,22 @@ function enforce(ctx: ScopedToolContext, text: string, source: string): string {
   return enforceFrontmatter(text, ctx.token.frontmatter, ctx.token.tags, source);
 }
 
-/** The five vault tools, bound to one scoped token: read everything not denied, write one folder. */
+/**
+ * The five vault tools, bound to one scoped token: read everything not denied, write one folder
+ * (or the whole vault minus writeDeny).
+ */
 export function registerScopedTools(server: McpServer, ctx: ScopedToolContext): void {
   const vault = ctx.config.VAULT_PATH;
-  const { writeDir, readDeny } = ctx.token;
+  const { writeDir, writeDeny, readDeny } = ctx.token;
+  const newNames = `new folders and notes need names of lowercase letters, digits and "-" (notes ending in .md)`;
   const writeRules =
-    `This token can only write Markdown notes below ${writeDir}/: names of lowercase letters, digits and "-", ` +
-    `files ending in .md, at most ${MAX_DEPTH_BELOW_WRITE_DIR} levels, at most ${MAX_NOTE_BYTES / 1024} KB.`;
+    writeDir === ""
+      ? `This token can write Markdown notes anywhere in the vault except hidden folders, agent instruction ` +
+        `files and these paths: ${writeDeny.length > 0 ? writeDeny.join(", ") : "(none)"}. Existing notes keep ` +
+        `their names; ${newNames}; at most ${MAX_DEPTH_WHOLE_VAULT} path parts and ${MAX_NEW_FOLDERS} new ` +
+        `folders per write, at most ${MAX_NOTE_BYTES / 1024} KB.`
+      : `This token can only write Markdown notes below ${writeDir}/: ${newNames}, ` +
+        `at most ${MAX_DEPTH_BELOW_WRITE_DIR} levels, at most ${MAX_NOTE_BYTES / 1024} KB.`;
 
   server.registerTool(
     "vault_read",
@@ -141,7 +157,7 @@ export function registerScopedTools(server: McpServer, ctx: ScopedToolContext): 
     { description: `Create or overwrite a vault note with the given content. ${writeRules}`, inputSchema: vaultWriteSchema },
     (input) =>
       audited(ctx, "vault_write", input.path, async () => {
-        const inner = checkWritePath(writeDir, input.path);
+        const inner = checkWritePath(writeDir, writeDeny, input.path);
         checkNoteSize(input.content);
         const output = enforce(ctx, input.content, input.path);
         checkNoteSize(output);
@@ -158,7 +174,7 @@ export function registerScopedTools(server: McpServer, ctx: ScopedToolContext): 
     { description: `Patch a heading section or frontmatter field of a vault note. ${writeRules}`, inputSchema: vaultPatchSchema },
     (input) =>
       audited(ctx, "vault_patch", input.path, async () => {
-        const inner = checkWritePath(writeDir, input.path);
+        const inner = checkWritePath(writeDir, writeDeny, input.path);
         const target = await resolveWriteTarget(vault, writeDir, inner, { createDirs: false });
         const patched = applyPatch(await readFileNoFollow(target), input);
         checkNoteSize(patched);
