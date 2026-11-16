@@ -637,6 +637,58 @@ test("scoped writes stop at writesPerHour", async () => {
 
 // A note whose body (after a normal YAML block) starts with a JavaScript front matter block.
 // Writing front matter back must keep that block as plain text and never evaluate it.
+// A note may start with a "---" line that opens no YAML mapping: a rule above a sentence, a
+// paragraph between two rules, a list. That is not front matter. Its text must stay in the body
+// and never turn into "0", "1", ... keys.
+const NOT_FRONT_MATTER = [
+  { name: "a rule with no closing line", content: "---\n\nMy meeting notes\n" },
+  { name: "a paragraph between rules", content: "---\nIntro paragraph\n---\n# Notes\n" },
+  { name: "a list between rules", content: "---\n- first\n- second\n---\n# Notes\n" },
+];
+
+test("scoped vault_write keeps the text of a note that starts with --- but has no front matter mapping", async () => {
+  await withScopedServer([makeScopedToken()], async ({ baseUrl, vaultRoot }) => {
+    for (const { name, content } of NOT_FRONT_MATTER) {
+      const result = await callTool(baseUrl, "vault_write", { path: `${WRITE_DIR}/rule.md`, content });
+      assert.equal(result.isError, false, `${name}: ${result.text}`);
+      const raw = await readFile(path.join(vaultRoot, WRITE_DIR, "rule.md"), "utf-8");
+      assert.equal(raw, `---\nsource: test-agent\ntags:\n  - scoped\n---\n${content}`, name);
+    }
+  });
+});
+
+test("main listener vault_read and vault_patch keep the text of a note that starts with --- but has no front matter mapping", async () => {
+  await withTestServer(async (baseUrl, config) => {
+    const call = async (name: string, args: Record<string, unknown>) => {
+      const res = await mcpRequest(baseUrl, config.TOKEN_INTERNAL, "tools/call", { name, arguments: args }, {
+        "X-Forwarded-For": "100.64.0.10",
+      });
+      return (res.body as { result: { isError?: boolean; content: { text: string }[] } }).result;
+    };
+    for (const { name, content } of NOT_FRONT_MATTER) {
+      await writeFile(path.join(config.VAULT_PATH, "rule.md"), content);
+      const read = await call("vault_read", { path: "rule.md" });
+      const note = JSON.parse(read.content[0].text) as { content: string; frontmatter: unknown };
+      assert.deepEqual(note.frontmatter, {}, name);
+      assert.equal(note.content, content, name);
+
+      const patch = await call("vault_patch", {
+        ...patchDefaults,
+        path: "rule.md",
+        targetType: "heading",
+        target: "Added",
+        operation: "append",
+        content: "more",
+        createTargetIfMissing: true,
+      });
+      assert.equal(patch.isError, undefined, `${name}: ${patch.content[0].text}`);
+      const raw = await readFile(path.join(config.VAULT_PATH, "rule.md"), "utf-8");
+      assert.ok(raw.startsWith(content), `${name}: ${JSON.stringify(raw)}`);
+      assert.match(raw, /more/, name);
+    }
+  });
+});
+
 const JS_IN_BODY = "---js\n{ x: (globalThis.__frontmatterEvaluated = true, 1) }\n---\n";
 const evaluatedFlag = globalThis as { __frontmatterEvaluated?: boolean };
 
