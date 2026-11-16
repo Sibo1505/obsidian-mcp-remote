@@ -190,6 +190,23 @@ test("vaultRead returns a note with invalid YAML front matter as plain body, eve
   });
 });
 
+test("front matter that is not a mapping (text, number, date, list) is body, not front matter", () => {
+  for (const raw of [
+    "---\n\nMy meeting notes\n",
+    "---\nIntro paragraph\n---\n# Notes",
+    "---\n- first\n- second\n---\nBody",
+    "---\n42\n---\nBody",
+    "---\n2024-01-01\n---\nBody",
+  ]) {
+    assert.deepEqual(parseFrontmatter(raw), { content: raw, data: {}, javascript: false }, JSON.stringify(raw));
+  }
+  // An empty block (only comments, or null, which gray-matter itself reads as empty) stays an
+  // empty front matter block, as before.
+  for (const raw of ["---\n---\nBody", "---\n# note\n---\nBody", "---\nnull\n---\nBody"]) {
+    assert.deepEqual(parseFrontmatter(raw), { content: "Body", data: {}, javascript: false }, JSON.stringify(raw));
+  }
+});
+
 test("vaultRead with targetType block explicitly rejects instead of silently falling back", async () => {
   await withTempVault(async (vaultRoot) => {
     await writeNote(vaultRoot, "note.md", "Body ^block-id");

@@ -32,6 +32,9 @@ const MATTER_OPTIONS = { engines: { javascript: inertEngine } };
 
 const JAVASCRIPT_LANGUAGES = new Set(["js", "javascript"]);
 
+const isMapping = (value: unknown): value is Record<string, unknown> =>
+  Object.prototype.toString.call(value) === "[object Object]";
+
 /**
  * Splits a note into front matter and body without ever executing front matter.
  *
@@ -49,9 +52,13 @@ export function parseFrontmatter(raw: string, source = "-"): ParsedNote {
     console.error(`Front matter could not be parsed, treating it as body: ${JSON.stringify(source)}`);
     return { content: raw, data: {}, javascript: false };
   }
+  // Front matter is a mapping. A block that reads as text, a number, a date, a list or null is
+  // something else (a rule above a paragraph, say), so the whole note stays body. Spreading such a
+  // value would turn a sentence into "0", "1", ... keys and drop it from the body.
+  if (!isMapping(file.data)) return { content: raw, data: {}, javascript: false };
   return {
     content: file.content,
-    data: { ...(file.data as Record<string, unknown>) },
+    data: { ...file.data },
     javascript: JAVASCRIPT_LANGUAGES.has(String(file.language ?? "").trim().toLowerCase()),
   };
 }
