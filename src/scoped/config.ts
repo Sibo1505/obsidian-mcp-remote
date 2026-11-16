@@ -11,8 +11,13 @@ export interface ScopedToken {
   secret: string;
   /** Exact peer addresses, IPv4-mapped prefix removed. */
   allowFrom: string[];
-  /** Vault-relative folder, "/"-separated, no trailing slash. */
+  /** Vault-relative folder, "/"-separated, no trailing slash; "" means the whole vault ("/" in the config). */
   writeDir: string;
+  /**
+   * Vault-relative path prefixes the token may not write, "/"-separated, no trailing slash. Already
+   * includes every readDeny entry: a note the token cannot read is never writable either.
+   */
+  writeDeny: string[];
   /** Vault-relative path prefixes, "/"-separated, no trailing slash. */
   readDeny: string[];
   expiresAt: Date;
@@ -62,6 +67,20 @@ function normalizeVaultPrefix(value: string): string | undefined {
 const isoDate = z.string().date();
 const isoDateTime = z.string().datetime({ offset: true });
 
+/** A list of vault path prefixes (readDeny, writeDeny): normalized, never the vault root. */
+const vaultPrefixList = z
+  .array(
+    z.string().transform((value, ctx) => {
+      const normalized = normalizeVaultPrefix(value);
+      if (normalized === undefined) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "must be a path inside the vault (not the root)" });
+        return z.NEVER;
+      }
+      return normalized;
+    }),
+  )
+  .default([]);
+
 const tokenEntrySchema = z
   .object({
     name: z.string().max(64).regex(/^[a-z0-9-]+$/, 'only lowercase letters, digits and "-"'),
@@ -74,23 +93,14 @@ const tokenEntrySchema = z
       .transform((list) => list.map(normalizeAddress)),
     writeDir: z
       .string()
-      .transform((value) => value.replace(/\/+$/, ""))
       .superRefine((value, ctx) => {
-        const problem = writeDirProblem(value);
+        const problem = writeDirProblem(value === "/" ? value : value.replace(/\/+$/, ""));
         if (problem) ctx.addIssue({ code: z.ZodIssueCode.custom, message: problem });
-      }),
-    readDeny: z
-      .array(
-        z.string().transform((value, ctx) => {
-          const normalized = normalizeVaultPrefix(value);
-          if (normalized === undefined) {
-            ctx.addIssue({ code: z.ZodIssueCode.custom, message: "must be a path inside the vault (not the root)" });
-            return z.NEVER;
-          }
-          return normalized;
-        }),
-      )
-      .default([]),
+      })
+      // "/" (the whole vault) becomes "", a folder loses its trailing slashes.
+      .transform((value) => (value === "/" ? "" : value.replace(/\/+$/, ""))),
+    writeDeny: vaultPrefixList,
+    readDeny: vaultPrefixList,
     expiresAt: z
       .string({ required_error: "required: every scoped token must expire" })
       .refine(
@@ -174,12 +184,16 @@ export function loadScopedConfig(env: NodeJS.ProcessEnv, mainConfig: Config): Sc
     if (seenNames.has(entry.name)) errors.push(`${where}.name: "${entry.name}" is used twice`);
     seenNames.add(entry.name);
 
-    // A token must be able to read what it writes, and a denied note must not be writable.
-    entry.readDeny.forEach((denied, denyIndex) => {
-      if (isReadDenied([denied], entry.writeDir) || isReadDenied([entry.writeDir], denied)) {
-        errors.push(`${where}.readDeny[${denyIndex}]: overlaps writeDir "${entry.writeDir}"`);
-      }
-    });
+    // A token must be able to read what it writes, and a denied note must not be writable. With
+    // one write folder an overlap is a configuration mistake; with the whole vault ("/") every
+    // readDeny entry simply becomes write-denied as well (see writeDeny below).
+    if (entry.writeDir !== "") {
+      entry.readDeny.forEach((denied, denyIndex) => {
+        if (isReadDenied([denied], entry.writeDir) || isReadDenied([entry.writeDir], denied)) {
+          errors.push(`${where}.readDeny[${denyIndex}]: overlaps writeDir "${entry.writeDir}"`);
+        }
+      });
+    }
 
     const secret = env[entry.tokenEnv];
     if (secret === undefined || secret === "") {
@@ -205,6 +219,7 @@ export function loadScopedConfig(env: NodeJS.ProcessEnv, mainConfig: Config): Sc
       secret,
       allowFrom: entry.allowFrom,
       writeDir: entry.writeDir,
+      writeDeny: [...new Set([...entry.writeDeny, ...entry.readDeny])],
       readDeny: entry.readDeny,
       expiresAt: entry.expiresAt,
       writesPerHour: entry.writesPerHour,

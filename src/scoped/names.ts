@@ -43,8 +43,41 @@ const WINDOWS_RESERVED = new Set([
 export const MAX_SEGMENT_LENGTH = 100;
 /** Most path parts (folders plus the file) allowed below the token's write folder. */
 export const MAX_DEPTH_BELOW_WRITE_DIR = 4;
+/** Most path parts (folders plus the file) of a write when the token may write the whole vault. */
+export const MAX_DEPTH_WHOLE_VAULT = 10;
+/** Most folders one write may create when the token may write the whole vault. */
+export const MAX_NEW_FOLDERS = 3;
 
-/** Returns why `segment` is not an allowed folder (or `.md` file) name, or undefined if it is. */
+/** Characters that are not allowed in a file or folder name on every OS the vault syncs to. */
+const UNPORTABLE_RE = /[\u0000-\u001f<>:"|?*\\/]/;
+
+function reservedProblem(stem: string): string | undefined {
+  const folded = stem.normalize("NFC").toLowerCase();
+  const reserved = RESERVED_PREFIXES.find((prefix) => folded.startsWith(prefix));
+  if (reserved) return `names starting with "${reserved}" are not allowed (agent instruction files)`;
+  if (WINDOWS_RESERVED.has(folded)) return `"${folded}" is a reserved name on Windows`;
+  return undefined;
+}
+
+/**
+ * The rules every part of a scoped write path must meet, including folders and notes that already
+ * exist (and so may carry names like "Projects" or "My Note.md" that a scoped token could not
+ * create itself): no hidden names, nothing that is not portable, Markdown only, and none of the
+ * agent instruction or Windows device names, in any spelling. Names the write would create must
+ * additionally pass `segmentProblem`.
+ */
+export function pathSegmentProblem(segment: string, kind: "dir" | "file"): string | undefined {
+  if (segment.length === 0) return "empty name";
+  if (segment.length > MAX_SEGMENT_LENGTH) return `name longer than ${MAX_SEGMENT_LENGTH} characters`;
+  if (segment.startsWith(".")) return `hidden name "${segment}" (starts with ".")`;
+  if (UNPORTABLE_RE.test(segment) || /[ .]$/.test(segment)) {
+    return `name "${segment}" contains characters that are not allowed on every OS`;
+  }
+  if (kind === "file" && !segment.endsWith(".md")) return `only Markdown notes (".md") can be written`;
+  return reservedProblem(kind === "file" ? segment.slice(0, -".md".length) : segment);
+}
+
+/** Returns why `segment` is not an allowed name for a new folder (or new `.md` file), or undefined if it is. */
 export function segmentProblem(segment: string, kind: "dir" | "file"): string | undefined {
   if (segment.length > MAX_SEGMENT_LENGTH) {
     return `name longer than ${MAX_SEGMENT_LENGTH} characters`;
@@ -55,20 +88,33 @@ export function segmentProblem(segment: string, kind: "dir" | "file"): string | 
   if (kind === "dir" && !DIR_SEGMENT_RE.test(segment)) {
     return `folder name "${segment}" must be lowercase letters, digits and "-"`;
   }
-  const stem = (kind === "file" ? segment.slice(0, -".md".length) : segment).toLowerCase();
-  const reserved = RESERVED_PREFIXES.find((prefix) => stem.startsWith(prefix));
-  if (reserved) {
-    return `names starting with "${reserved}" are not allowed (agent instruction files)`;
-  }
-  if (WINDOWS_RESERVED.has(stem)) {
-    return `"${stem}" is a reserved name on Windows`;
-  }
-  return undefined;
+  return reservedProblem(kind === "file" ? segment.slice(0, -".md".length) : segment);
 }
 
-/** Returns why `writeDir` (from the config) is not a usable write folder, or undefined if it is. */
+/**
+ * Turns any note name stem into one a scoped token may create ("Mein Ärger 2" -> "mein-arger-2"),
+ * for files the server names itself, such as conflict copies. Never returns a reserved name.
+ */
+export function toSafeStem(stem: string, maxLength: number): string {
+  const slug = stem
+    .normalize("NFKD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, maxLength)
+    .replace(/-+$/, "");
+  const candidate = slug === "" ? "note" : slug;
+  return reservedProblem(candidate) ? `note-${candidate}`.slice(0, maxLength).replace(/-+$/, "") : candidate;
+}
+
+/**
+ * Returns why `writeDir` (from the config) is not a usable write folder, or undefined if it is.
+ * "/" is the explicit way to allow the whole vault; an empty value is never taken to mean that.
+ */
 export function writeDirProblem(writeDir: string): string | undefined {
-  if (writeDir === "") return "must name a folder inside the vault, not the vault root";
+  if (writeDir === "/") return undefined;
+  if (writeDir === "") return 'must name a folder inside the vault, or "/" for the whole vault';
   for (const segment of writeDir.split("/")) {
     const problem = segmentProblem(segment, "dir");
     if (problem) return problem;
