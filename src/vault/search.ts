@@ -160,10 +160,14 @@ jsonLogic.add_operation("glob", (pattern: string, value: string) => {
   if (limits && (typeof pattern !== "string" || pattern.length > limits.maxGlobLength)) {
     throw new SearchLimitError(`glob pattern must be text of at most ${limits.maxGlobLength} characters`);
   }
+  const options = { nocase: true, nobrace: limits !== undefined };
+  // Only text patterns are cached: the key is text, and anything else must keep failing in
+  // Minimatch ("invalid pattern") instead of hitting the entry of its text form.
+  if (typeof pattern !== "string") return new Minimatch(pattern, options).match(value ?? "");
   const key = `${limits ? "nobrace" : "brace"}:${pattern}`;
   let matcher = globCache.get(key);
   if (!matcher) {
-    matcher = new Minimatch(pattern, { nocase: true, nobrace: limits !== undefined });
+    matcher = new Minimatch(pattern, options);
     if (globCache.size >= 100) globCache.clear();
     globCache.set(key, matcher);
   }
