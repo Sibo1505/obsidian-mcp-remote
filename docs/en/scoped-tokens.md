@@ -1,8 +1,10 @@
 # Scoped tokens
 
 Optional. A scoped token lets an agent on another machine in your tailnet **read the vault and
-write to exactly one folder**. A typical case: an agent on a server should read your notes and
-rules, and file its own notes in an inbox folder, without being able to change anything else.
+write either to exactly one folder, or anywhere except the paths you deny**. Typical cases: an agent
+on a server reads your notes and rules and files its own notes in an inbox folder, without being
+able to change anything else (`writeDir: "notes-inbox"`); or it may put notes where they belong,
+but never touch agent configuration or your rule notes (`writeDir: "/"` with `writeDeny`).
 
 Scoped tokens use their **own listener on their own port**. The main listener (`PORT`, OAuth and
 `TOKEN_INTERNAL`) stays exactly as it is.
@@ -34,15 +36,25 @@ Scoped tokens use their **own listener on their own port**. The main listener (`
   larger than 1 MB or more than 5 seconds of evaluation end with an error that asks to narrow the
   query, never with a silently cut list.
 - **Writes** (`vault_write`, `vault_patch`) are checked by the server, not by the client:
-  - only below `writeDir`, and only `.md` files;
-  - every folder name matches `^[a-z0-9][a-z0-9-]*$`, the file name `^[a-z0-9][a-z0-9-]*\.md$`.
-    So no dot files or dot folders (`.claude/`), no upper case, no spaces;
-  - no name starting with one of the known agent instruction names (list under
-    [Limits](#limits)), and no Windows device names (`con`, `prn`, `aux`, `nul`, `com0`–`com9`,
-    `lpt0`–`lpt9`);
-  - at most 100 characters per name, and at most 4 path parts below `writeDir`, counting folders
-    and the file (`notes-inbox/a/b/c/x.md` is the deepest allowed);
-  - the path must already be in plain form: no `..` or `.` path part, no `//`, no `\`;
+  - only below `writeDir`; with `writeDir: "/"` anywhere in the vault. Never into a `writeDeny` or
+    `readDeny` path (compared without regard to case);
+  - every part of the path, existing or not: no dot files or dot folders (`.claude/`,
+    `.obsidian/`), no characters some OS cannot store (`<>:"|?*`, control characters, a trailing
+    space or dot), only `.md` notes, no name starting with one of the known agent instruction names
+    (list under [Limits](#limits)) and no Windows device names (`con`, `prn`, `aux`, `nul`,
+    `com0`–`com9`, `lpt0`–`lpt9`). So folders like `claude-config/` stay unwritable without any
+    `writeDeny` entry;
+  - **whatever the write creates** (new folders and a new note) must match `^[a-z0-9][a-z0-9-]*$`
+    (folders) and `^[a-z0-9][a-z0-9-]*\.md$` (notes): no upper case, no spaces. Existing folders
+    and notes keep their names, so with `writeDir: "/"` a token can write `Projects/x.md` or
+    update `My Notes/Idea.md`, but cannot create `Projects/My Idea.md`;
+  - a new name must not differ from an existing sibling only in case (`notes.md` next to
+    `Notes.md`): on the case-insensitive file systems the vault syncs to, both would be one file;
+  - at most 100 characters per name. With one write folder at most 4 path parts below `writeDir`,
+    counting folders and the file (`notes-inbox/a/b/c/x.md` is the deepest allowed); with
+    `writeDir: "/"` at most 10 path parts and at most 3 new folders per write;
+  - the path must already be in plain form: no `..` or `.` path part, no `//`, no `\`, no leading `/`;
+  - all of this is checked before anything is created: a rejected write leaves no empty folders;
   - no symlink anywhere on the way from the vault root to the note, and the note itself must not be
     a symlink or have other hard links. The resolved folder must lie inside
     `realpath(vault/writeDir)`;
@@ -51,7 +63,8 @@ Scoped tokens use their **own listener on their own port**. The main listener (`
 - **Marked notes.** After every scoped write, the server sets the token's `frontmatter` fields and
   adds its `tags` in the final note, even when a write or patch tried to remove them.
 - **Conflicts.** If someone else changed the same note at the same time, the server keeps the
-  token's version as `<name>-conflict-<yyyymmddhhmmss>.md` next to it, under the same rules.
+  token's version as `<name>-conflict-<yyyymmddhhmmss>.md` next to it, under the same rules. The
+  name is reduced to a plain one first (`My Idea.md` → `my-idea-conflict-….md`).
 - **Traceable.** The commit message starts with `<name>: vault_write <path>`,
   `<name>: vault_patch <path>` or `<name>: conflict quarantined <path>`. Every request writes one
   log line, never content or the token:
@@ -60,6 +73,7 @@ Scoped tokens use their **own listener on their own port**. The main listener (`
   scoped token=agent method=tools/list
   scoped token=agent tool=vault_write path="notes-inbox/today.md" result=ok
   scoped token=agent tool=vault_write path="CLAUDE.md" result=denied:outside-write-dir
+  scoped token=agent tool=vault_patch path="rules/house-rules.md" result=denied:write-denied
   scoped token=agent tool=vault_read path="missing.md" result=error:ENOENT
   scoped auth rejected reason=address-not-allowed token=agent from=192.0.2.10
   ```
@@ -86,8 +100,9 @@ Fields per token (unknown fields are an error, so a typo cannot silently drop a 
 | `name` | yes | `[a-z0-9-]`, unique; used in logs and commit messages. |
 | `tokenEnv` | yes | Name of the environment variable that holds the secret. Its **value** must differ from the values of `TOKEN_INTERNAL`, `OAUTH_CLIENT_SECRET`, `OAUTH_PASSWORD` and every other token's secret. |
 | `allowFrom` | yes | Exact IP addresses (no ranges, no host names). Stored in canonical form, so `FD7A:115C:A1E0:0:0:0:0:1` and `fd7a:115c:a1e0::1` are the same address. |
-| `writeDir` | yes | The one writable folder, relative to the vault, following the folder name rules above. |
-| `readDeny` | no | Path prefixes (folders or files) the token cannot read: an entry covers itself and everything below it, compared without regard to case. Default: empty, so everything is readable. An entry that overlaps `writeDir` (covers it, lies inside it, or is its parent) is an error. |
+| `writeDir` | yes | The one writable folder, relative to the vault, following the folder name rules above; or exactly `"/"` for the whole vault. An empty value is an error, never "everything". |
+| `writeDeny` | no | Path prefixes (folders or files) the token cannot write, like `readDeny`. Default: empty. Mainly for `writeDir: "/"`: list what the vault's devices treat as rules or configuration. |
+| `readDeny` | no | Path prefixes (folders or files) the token cannot read: an entry covers itself and everything below it, compared without regard to case. Default: empty, so everything is readable. Every entry is write-denied as well. With one write folder, an entry that overlaps `writeDir` (covers it, lies inside it, or is its parent) is an error. |
 | `expiresAt` | yes | ISO date (`2026-12-31`, meaning 00:00 UTC) or date-time with offset (`2026-12-31T23:59:00Z`). After that: 401 and a log line. |
 | `writesPerHour` | no | Default 60. |
 | `frontmatter` | no | Fields the server sets on every note it writes for this token (strings, numbers, booleans; not `tags`). |
@@ -99,6 +114,12 @@ Example (`.env`; the single quotes keep the JSON in one piece):
 SCOPED_PORT=3001
 SCOPED_TOKENS_JSON='[{"name":"agent","tokenEnv":"TOKEN_AGENT","allowFrom":["100.64.0.10"],"writeDir":"notes-inbox","readDeny":["private/"],"expiresAt":"2026-12-31","writesPerHour":60,"frontmatter":{"source":"agent"},"tags":["agent"]}]'
 TOKEN_AGENT=<openssl rand -hex 32>
+```
+
+The same token for the whole vault, keeping it out of a rules folder and one note:
+
+```bash
+SCOPED_TOKENS_JSON='[{"name":"agent","tokenEnv":"TOKEN_AGENT","allowFrom":["100.64.0.10"],"writeDir":"/","writeDeny":["rules/","projects/house-rules.md"],"readDeny":["private/"],"expiresAt":"2026-12-31","frontmatter":{"source":"agent"},"tags":["agent"]}]'
 ```
 
 and pass them into the container (`docker-compose.yml` already passes `SCOPED_PORT`, `SCOPED_HOST`
@@ -148,8 +169,13 @@ The token check is one layer; the network should be the other:
   without that block (it is neither run nor returned), and scoped writes and `vault_patch` refuse
   to rewrite it. Front matter
   that is not valid YAML is read as plain text (one log line names the note).
-- **Only plain names.** Scoped writes accept lowercase ASCII letters, digits and `-` only: no
-  spaces, capitals or umlauts.
+- **Writing the whole vault is a deny list.** With `writeDir: "/"`, a new folder is writable until
+  you list it. The name rules keep agent configuration out (dot folders, `claude*`, `agents*`, ...),
+  but not notes that people or agents on other devices *treat* as rules (a "house rules" note, a
+  project's decision log). Put those in `writeDeny`. Existing notes the token edits get its
+  `frontmatter` and `tags`, so you can see afterwards which notes it touched.
+- **Only plain new names.** Folders and notes a scoped token creates use lowercase ASCII letters,
+  digits and `-` only: no spaces, capitals or umlauts. Existing names stay as they are.
 - **The secret lives on the agent machine.** It only works on the scoped port, from the listed
   addresses, until `expiresAt`. Rotate it by changing the secret variable and restarting.
 - **Symlinks.** All checks resolve them, and on Linux the final open refuses a symlink
