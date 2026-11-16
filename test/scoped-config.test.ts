@@ -56,6 +56,34 @@ test("a valid scoped token config is parsed, with defaults for the optional fiel
   assert.deepEqual(token.tags, []);
 });
 
+test('writeDir "/" opens the whole vault; writeDeny is normalized and every readDeny entry is write-denied too', () => {
+  const setup = loadScopedConfig(
+    envWith([
+      tokenEntry({
+        writeDir: "/",
+        writeDeny: ["03-resources/claude-config/", "./.claude", "private"],
+        // With the whole vault writable, readDeny cannot overlap a write folder: no error.
+        readDeny: ["private/", "projects/secret-plan.md"],
+      }),
+    ]),
+    mainConfig,
+  );
+  assert.equal(setup.status, "enabled", JSON.stringify(setup));
+  if (setup.status !== "enabled") return;
+  const [token] = setup.tokens;
+  assert.equal(token.writeDir, "");
+  assert.deepEqual(token.readDeny, ["private", "projects/secret-plan.md"]);
+  assert.deepEqual(token.writeDeny, ["03-resources/claude-config", ".claude", "private", "projects/secret-plan.md"]);
+});
+
+test("with one write folder, readDeny entries are write-denied as well and writeDeny defaults to empty", () => {
+  const setup = loadScopedConfig(envWith([tokenEntry({ readDeny: ["private"] })]), mainConfig);
+  assert.equal(setup.status, "enabled", JSON.stringify(setup));
+  if (setup.status !== "enabled") return;
+  assert.equal(setup.tokens[0].writeDir, "notes-inbox");
+  assert.deepEqual(setup.tokens[0].writeDeny, ["private"]);
+});
+
 test("all optional fields are taken over when given", () => {
   const setup = loadScopedConfig(
     envWith([
@@ -196,6 +224,23 @@ const invalidCases: { name: string; env: NodeJS.ProcessEnv; field: string }[] = 
     name: "readDeny is a parent of writeDir",
     env: envWith([tokenEntry({ writeDir: "inbox/notes", readDeny: ["inbox"] })]),
     field: `${T}.readDeny[0]: overlaps writeDir`,
+  },
+  // Only exactly "/" means the whole vault: anything that merely reduces to the root stays an error.
+  { name: 'writeDir "//" (not the explicit "/")', env: envWith([tokenEntry({ writeDir: "//" })]), field: `${T}.writeDir:` },
+  {
+    name: "writeDeny escapes with ..",
+    env: envWith([tokenEntry({ writeDir: "/", writeDeny: ["../outside"] })]),
+    field: `${T}.writeDeny[0]:`,
+  },
+  {
+    name: "writeDeny is the vault root",
+    env: envWith([tokenEntry({ writeDir: "/", writeDeny: ["/"] })]),
+    field: `${T}.writeDeny[0]:`,
+  },
+  {
+    name: "writeDeny is not a list",
+    env: envWith([tokenEntry({ writeDir: "/", writeDeny: "03-resources" })]),
+    field: `${T}.writeDeny:`,
   },
   { name: "expiresAt missing", env: envWith([tokenEntry({ expiresAt: undefined })]), field: `${T}.expiresAt:` },
   {
