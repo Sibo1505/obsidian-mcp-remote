@@ -452,6 +452,16 @@ test("searchQuery supports the custom glob operator against a note's path", asyn
   });
 });
 
+test("searchQuery's glob operator refuses a pattern that is not text, also after the same text was used", async () => {
+  await withTempVault(async (vaultRoot) => {
+    await writeNote(vaultRoot, "a.md", "Body");
+    const notText = { glob: [["*.md"], { var: "path" }] };
+    await assert.rejects(() => searchQuery(vaultRoot, { query: notText }), /invalid pattern/);
+    assert.equal((await searchQuery(vaultRoot, { query: { glob: ["*.md", { var: "path" }] } })).length, 1);
+    await assert.rejects(() => searchQuery(vaultRoot, { query: notText }), /invalid pattern/);
+  });
+});
+
 test("searchQuery supports the custom regexp operator for a legitimate pattern", async () => {
   await withTempVault(async (vaultRoot) => {
     await writeNote(vaultRoot, "a.md", "TODO: finish this");
