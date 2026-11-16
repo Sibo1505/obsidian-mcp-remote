@@ -11,7 +11,8 @@
   tailnet IP in the first place (via the `tailscale` sidecar, never `0.0.0.0`), and the server
   additionally checks the source IP of every request against Tailscale's address range — a leaked
   token doesn't work from outside.
-- An agent on another machine that should only write to one folder gets a
+- An agent on another machine that should only write to one folder (or everywhere except a deny
+  list) gets a
   [scoped token](scoped-tokens.md) on its own port, never `TOKEN_INTERNAL` or port `PORT`.
 - Read/write access means a leaked token also allows reading the entire vault, not just writing.
   Git history protects against destructive edits, not against exfiltration.

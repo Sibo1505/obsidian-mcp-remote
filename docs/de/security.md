@@ -12,7 +12,8 @@
   nur eine Tailnet-IP (über den `tailscale`-Sidecar, nie `0.0.0.0`), und der Server prüft
   zusätzlich bei jeder Anfrage die Quell-IP gegen Tailscales Adressbereich — ein geleakter Token
   funktioniert nicht von außerhalb.
-- Ein Agent auf einem anderen Rechner, der nur in einen Ordner schreiben soll, bekommt einen
+- Ein Agent auf einem anderen Rechner, der nur in einen Ordner (oder überall außer in gesperrten
+  Pfaden) schreiben soll, bekommt einen
   [eingeschränkten Token](scoped-tokens.md) auf eigenem Port, nie `TOKEN_INTERNAL` oder den Port `PORT`.
 - Lese-/Schreibzugriff bedeutet: ein geleakter Token erlaubt auch das Auslesen des kompletten
   Vaults, nicht nur Schreibzugriff. Git-Historie schützt vor zerstörerischen Änderungen, nicht vor
