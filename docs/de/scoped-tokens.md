@@ -1,9 +1,11 @@
 # Eingeschränkte Tokens (Scoped tokens)
 
 Optional. Mit einem eingeschränkten Token kann ein Agent auf einem anderen Rechner in deinem
-Tailnet **den Vault lesen und in genau einen Ordner schreiben**. Ein typischer Fall: Ein Agent auf
-einem Server soll deine Notizen und Regeln lesen und eigene Notizen in einen Eingangsordner legen,
-aber sonst nichts ändern können.
+Tailnet **den Vault lesen und entweder in genau einen Ordner schreiben oder überall außer in den
+Pfaden, die du sperrst**. Typische Fälle: Ein Agent auf einem Server liest deine Notizen und Regeln
+und legt eigene Notizen in einen Eingangsordner, kann aber sonst nichts ändern
+(`writeDir: "notes-inbox"`). Oder er darf Notizen dort ablegen, wo sie hingehören, aber nie die
+Agent-Konfiguration oder deine Regel-Notizen anfassen (`writeDir: "/"` mit `writeDeny`).
 
 Eingeschränkte Tokens nutzen einen **eigenen Listener auf einem eigenen Port**. Der Haupt-Listener
 (`PORT`, OAuth und `TOKEN_INTERNAL`) bleibt genau so, wie er ist.
@@ -38,16 +40,29 @@ Eingeschränkte Tokens nutzen einen **eigenen Listener auf einem eigenen Port**.
   Rechenzeit enden mit einem Fehler, der um eine engere Abfrage bittet, nie mit einer still
   gekürzten Liste.
 - **Schreiben** (`vault_write`, `vault_patch`) prüft der Server, nicht der Client:
-  - nur unter `writeDir` und nur `.md`-Dateien;
-  - jeder Ordnername passt auf `^[a-z0-9][a-z0-9-]*$`, der Dateiname auf
-    `^[a-z0-9][a-z0-9-]*\.md$`. Also keine Punkt-Dateien oder Punkt-Ordner (`.claude/`), keine
-    Großbuchstaben, keine Leerzeichen;
-  - kein Name, der mit einem der bekannten Anweisungsnamen von Agents beginnt (Liste unter
-    [Grenzen](#grenzen)), und keine Windows-Gerätenamen (`con`, `prn`, `aux`, `nul`,
-    `com0`–`com9`, `lpt0`–`lpt9`);
-  - höchstens 100 Zeichen pro Name und höchstens 4 Pfadteile unter `writeDir`, Ordner und Datei
-    zusammen gezählt (`notes-inbox/a/b/c/x.md` ist das Tiefste, was geht);
-  - der Pfad muss schon in einfacher Form sein: kein `..`- oder `.`-Teil, kein `//`, kein `\`;
+  - nur unter `writeDir`, mit `writeDir: "/"` überall im Vault. Nie in einen Pfad aus `writeDeny`
+    oder `readDeny` (ohne Groß-/Kleinschreibung verglichen);
+  - jeder Teil des Pfads, ob es ihn schon gibt oder nicht: keine Punkt-Dateien oder Punkt-Ordner
+    (`.claude/`, `.obsidian/`), keine Zeichen, die ein Betriebssystem nicht speichern kann
+    (`<>:"|?*`, Steuerzeichen, Leerzeichen oder Punkt am Ende), nur `.md`-Notizen, kein Name, der
+    mit einem der bekannten Anweisungsnamen von Agents beginnt (Liste unter [Grenzen](#grenzen)),
+    und keine Windows-Gerätenamen (`con`, `prn`, `aux`, `nul`, `com0`–`com9`, `lpt0`–`lpt9`).
+    Ordner wie `claude-config/` bleiben damit auch ohne `writeDeny`-Eintrag gesperrt;
+  - **was das Schreiben neu anlegt** (neue Ordner und eine neue Notiz), muss auf
+    `^[a-z0-9][a-z0-9-]*$` (Ordner) bzw. `^[a-z0-9][a-z0-9-]*\.md$` (Notizen) passen: keine
+    Großbuchstaben, keine Leerzeichen. Vorhandene Ordner und Notizen behalten ihre Namen. Mit
+    `writeDir: "/"` kann ein Token also `Projects/x.md` schreiben oder `My Notes/Idea.md` ändern,
+    aber nicht `Projects/My Idea.md` anlegen;
+  - ein neuer Name darf sich von einem vorhandenen Nachbarn nicht nur in Groß-/Kleinschreibung
+    unterscheiden (`notes.md` neben `Notes.md`): Auf den Dateisystemen, auf die der Vault
+    synchronisiert wird, wären beide dieselbe Datei;
+  - höchstens 100 Zeichen pro Name. Mit einem Schreibordner höchstens 4 Pfadteile unter `writeDir`,
+    Ordner und Datei zusammen gezählt (`notes-inbox/a/b/c/x.md` ist das Tiefste, was geht); mit
+    `writeDir: "/"` höchstens 10 Pfadteile und höchstens 3 neue Ordner pro Schreibvorgang;
+  - der Pfad muss schon in einfacher Form sein: kein `..`- oder `.`-Teil, kein `//`, kein `\`, kein
+    `/` am Anfang;
+  - all das wird geprüft, bevor etwas angelegt wird: Ein abgelehntes Schreiben hinterlässt keine
+    leeren Ordner;
   - kein Symlink auf dem Weg vom Vault bis zur Notiz, und die Notiz selbst darf kein Symlink sein
     und keine weiteren Hardlinks haben. Der aufgelöste Ordner muss in `realpath(vault/writeDir)`
     liegen;
@@ -57,7 +72,8 @@ Eingeschränkte Tokens nutzen einen **eigenen Listener auf einem eigenen Port**.
   `frontmatter`-Felder des Tokens und ergänzt seine `tags` in der fertigen Notiz, auch wenn ein
   Schreiben oder Patch sie entfernen wollte.
 - **Konflikte.** Hat jemand dieselbe Notiz gleichzeitig geändert, behält der Server die Fassung des
-  Tokens als `<name>-conflict-<jjjjmmtthhmmss>.md` daneben, nach denselben Regeln.
+  Tokens als `<name>-conflict-<jjjjmmtthhmmss>.md` daneben, nach denselben Regeln. Der Name wird
+  vorher auf einen einfachen Namen gebracht (`My Idea.md` → `my-idea-conflict-….md`).
 - **Nachvollziehbar.** Der Commit-Text beginnt mit `<name>: vault_write <pfad>`,
   `<name>: vault_patch <pfad>` oder `<name>: conflict quarantined <pfad>`. Jede Anfrage schreibt
   eine Log-Zeile, nie mit Inhalt oder Token:
@@ -66,6 +82,7 @@ Eingeschränkte Tokens nutzen einen **eigenen Listener auf einem eigenen Port**.
   scoped token=agent method=tools/list
   scoped token=agent tool=vault_write path="notes-inbox/today.md" result=ok
   scoped token=agent tool=vault_write path="CLAUDE.md" result=denied:outside-write-dir
+  scoped token=agent tool=vault_patch path="rules/house-rules.md" result=denied:write-denied
   scoped token=agent tool=vault_read path="missing.md" result=error:ENOENT
   scoped auth rejected reason=address-not-allowed token=agent from=192.0.2.10
   ```
@@ -93,8 +110,9 @@ wegfallen lässt):
 | `name` | ja | `[a-z0-9-]`, eindeutig; steht im Log und im Commit-Text. |
 | `tokenEnv` | ja | Name der Umgebungsvariable mit dem Geheimnis. Ihr **Wert** muss sich von den Werten von `TOKEN_INTERNAL`, `OAUTH_CLIENT_SECRET`, `OAUTH_PASSWORD` und den Geheimnissen aller anderen Tokens unterscheiden. |
 | `allowFrom` | ja | Exakte IP-Adressen (keine Bereiche, keine Hostnamen). Gespeichert in einheitlicher Schreibweise, `FD7A:115C:A1E0:0:0:0:0:1` und `fd7a:115c:a1e0::1` sind also dieselbe Adresse. |
-| `writeDir` | ja | Der eine beschreibbare Ordner, relativ zum Vault, nach den Namensregeln oben. |
-| `readDeny` | nein | Pfad-Präfixe (Ordner oder Dateien), die der Token nicht lesen darf: Ein Eintrag gilt für sich selbst und alles darunter, ohne Groß-/Kleinschreibung. Standard: leer, also ist alles lesbar. Ein Eintrag, der sich mit `writeDir` überschneidet (ihn abdeckt, in ihm liegt oder darüber liegt), ist ein Fehler. |
+| `writeDir` | ja | Der eine beschreibbare Ordner, relativ zum Vault, nach den Namensregeln oben; oder genau `"/"` für den ganzen Vault. Ein leerer Wert ist ein Fehler, nie „alles“. |
+| `writeDeny` | nein | Pfad-Präfixe (Ordner oder Dateien), die der Token nicht schreiben darf, wie bei `readDeny`. Standard: leer. Vor allem für `writeDir: "/"`: Trag ein, was die Geräte des Vaults als Regeln oder Konfiguration behandeln. |
+| `readDeny` | nein | Pfad-Präfixe (Ordner oder Dateien), die der Token nicht lesen darf: Ein Eintrag gilt für sich selbst und alles darunter, ohne Groß-/Kleinschreibung. Standard: leer, also ist alles lesbar. Jeder Eintrag ist auch für das Schreiben gesperrt. Mit einem Schreibordner ist ein Eintrag, der sich mit `writeDir` überschneidet (ihn abdeckt, in ihm liegt oder darüber liegt), ein Fehler. |
 | `expiresAt` | ja | ISO-Datum (`2026-12-31`, gemeint ist 00:00 UTC) oder Datum mit Uhrzeit und Zeitzone (`2026-12-31T23:59:00Z`). Danach: 401 und eine Log-Zeile. |
 | `writesPerHour` | nein | Standard 60. |
 | `frontmatter` | nein | Felder, die der Server in jeder Notiz dieses Tokens setzt (Text, Zahl, Ja/Nein; nicht `tags`). |
@@ -106,6 +124,12 @@ Beispiel (`.env`; die einfachen Anführungszeichen halten das JSON zusammen):
 SCOPED_PORT=3001
 SCOPED_TOKENS_JSON='[{"name":"agent","tokenEnv":"TOKEN_AGENT","allowFrom":["100.64.0.10"],"writeDir":"notes-inbox","readDeny":["private/"],"expiresAt":"2026-12-31","writesPerHour":60,"frontmatter":{"source":"agent"},"tags":["agent"]}]'
 TOKEN_AGENT=<openssl rand -hex 32>
+```
+
+Derselbe Token für den ganzen Vault, aber ohne einen Regel-Ordner und eine einzelne Notiz:
+
+```bash
+SCOPED_TOKENS_JSON='[{"name":"agent","tokenEnv":"TOKEN_AGENT","allowFrom":["100.64.0.10"],"writeDir":"/","writeDeny":["rules/","projects/house-rules.md"],"readDeny":["private/"],"expiresAt":"2026-12-31","frontmatter":{"source":"agent"},"tags":["agent"]}]'
 ```
 
 Diese Werte kommen in den Container (`docker-compose.yml` gibt `SCOPED_PORT`, `SCOPED_HOST` und
@@ -156,8 +180,15 @@ Die Token-Prüfung ist eine Schicht, das Netz sollte die zweite sein:
   diesen Block gelesen (er wird weder ausgeführt noch zurückgegeben). Eingeschränktes Schreiben und
   `vault_patch` lehnen es ab, sie neu zu schreiben. Frontmatter, das kein gültiges YAML ist, wird als
   normaler Text gelesen (eine Log-Zeile nennt die Notiz).
-- **Nur einfache Namen.** Eingeschränktes Schreiben nimmt nur Kleinbuchstaben (ASCII), Ziffern und
-  `-` an: keine Leerzeichen, keine Großbuchstaben, keine Umlaute.
+- **Den ganzen Vault schreiben heißt Sperrliste.** Mit `writeDir: "/"` ist ein neuer Ordner
+  beschreibbar, bis du ihn einträgst. Die Namensregeln halten Agent-Konfiguration fern
+  (Punkt-Ordner, `claude*`, `agents*`, ...), aber nicht Notizen, die Menschen oder Agents auf
+  anderen Geräten als Regeln *behandeln* (eine Notiz „Hausregeln“, das Entscheidungs-Log eines
+  Projekts). Die gehören in `writeDeny`. Vorhandene Notizen, die der Token bearbeitet, bekommen sein
+  `frontmatter` und seine `tags`. So siehst du hinterher, was er angefasst hat.
+- **Nur einfache neue Namen.** Ordner und Notizen, die ein eingeschränkter Token anlegt, bestehen nur
+  aus Kleinbuchstaben (ASCII), Ziffern und `-`: keine Leerzeichen, keine Großbuchstaben, keine
+  Umlaute. Vorhandene Namen bleiben, wie sie sind.
 - **Das Geheimnis liegt auf dem Agent-Rechner.** Es gilt nur auf dem eingeschränkten Port, nur von
   den eingetragenen Adressen und nur bis `expiresAt`. Zum Wechseln änderst du die Variable und
   startest neu.
