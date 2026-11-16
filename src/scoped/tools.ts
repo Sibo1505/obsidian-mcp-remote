@@ -38,6 +38,8 @@ export interface ScopedToolContext {
   log: (line: string) => void;
   /** Freshness pull before a read, shared and throttled across requests (see pull.ts). */
   pull: () => Promise<void>;
+  /** Called when a tool call reaches its tool, which then writes the audit line. */
+  reached?: () => void;
 }
 
 /** Names of the tools registered for a scoped token. */
@@ -71,6 +73,7 @@ async function audited(
   requestedPath: string,
   fn: () => Promise<unknown>,
 ): Promise<CallToolResult> {
+  ctx.reached?.();
   const line = (result: string) =>
     `scoped token=${ctx.token.name} tool=${tool} path=${JSON.stringify(requestedPath)} result=${result}`;
   try {

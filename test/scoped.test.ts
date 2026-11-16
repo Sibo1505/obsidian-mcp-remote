@@ -157,7 +157,7 @@ test("scoped listener: a JSON-RPC batch is refused with 400 and runs none of its
   });
 });
 
-test("scoped listener: every authenticated request without a tool call writes one line with its method", async () => {
+test("scoped listener: every authenticated request writes one line, also a tool call that never reaches the tool", async () => {
   await withScopedServer([makeScopedToken()], async ({ baseUrl, logs }) => {
     await mcpRequest(baseUrl, SCOPED_SECRET, "initialize", {
       protocolVersion: "2025-06-18",
@@ -167,6 +167,21 @@ test("scoped listener: every authenticated request without a tool call writes on
     await mcpRequest(baseUrl, SCOPED_SECRET, "tools/list");
     await mcpRequest(baseUrl, SCOPED_SECRET, "tools/call", { name: "no_such_tool", arguments: {} });
     await callTool(baseUrl, "vault_list", { path: "" });
+    // Invalid arguments: the SDK refuses them before the tool runs.
+    const invalid = await mcpRequest(baseUrl, SCOPED_SECRET, "tools/call", {
+      name: "vault_write",
+      arguments: { path: `${WRITE_DIR}/no-content.md` },
+    });
+    assert.equal(invalid.status, 200);
+    // A client that does not accept the transport's answer: 406 before the tool runs.
+    const notAcceptable = await mcpRequest(
+      baseUrl,
+      SCOPED_SECRET,
+      "tools/call",
+      { name: "vault_write", arguments: { path: `${WRITE_DIR}/x.md`, content: "x" } },
+      { Accept: "text/html" },
+    );
+    assert.equal(notAcceptable.status, 406);
     assert.deepEqual(
       logs.filter((l) => l.startsWith("scoped token=")),
       [
@@ -174,6 +189,8 @@ test("scoped listener: every authenticated request without a tool call writes on
         "scoped token=test-agent method=tools/list",
         "scoped token=test-agent method=tools/call",
         'scoped token=test-agent tool=vault_list path="" result=ok',
+        "scoped token=test-agent method=tools/call tool=vault_write result=rejected",
+        "scoped token=test-agent method=tools/call tool=vault_write result=rejected",
       ],
     );
   });
