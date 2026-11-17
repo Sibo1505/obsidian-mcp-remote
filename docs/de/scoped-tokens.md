@@ -91,8 +91,12 @@ Eingeschränkte Tokens nutzen einen **eigenen Listener auf einem eigenen Port**.
     Text, der über einen Alias wiederverwendet wird, zählt jedes Mal voll): Ein paar hundert Byte
     Aliase können für jeden späteren Leser Milliarden Werte bedeuten. `vault_patch` prüft das
     Frontmatter der vorhandenen Notiz genauso, bevor es sie ändert;
-  - höchstens `writesPerHour` Schreibversuche pro Token (gleitende Stunde). Ein Versuch zählt, sobald
-    Pfad und Größe passen, auch wenn danach das Frontmatter oder der Patch abgelehnt wird.
+  - höchstens `writesPerHour` Schreibversuche pro Token (gleitende Stunde). Ein `vault_write` zählt,
+    sobald der Pfad die Prüfungen am Text besteht (Schreibordner, Sperrlisten, die Namen aller
+    Teile, Länge) und die Notiz die Größengrenze; ein `vault_patch` zählt, sobald die Notiz gefunden
+    und gelesen ist. Jede Ablehnung danach zählt mit: ein neuer Name, der nicht einfach ist, ein
+    Groß/klein-Zwilling, ein Symlink auf dem Weg, das Frontmatter, eine fehlende Überschrift, die
+    Größe der geänderten Notiz.
 - **Markierte Notizen.** Nach jedem eingeschränkten Schreiben setzt der Server die
   `frontmatter`-Felder des Tokens und ergänzt seine `tags` in der fertigen Notiz, auch wenn ein
   Schreiben oder Patch sie entfernen wollte.
@@ -142,7 +146,7 @@ wegfallen lässt):
 | `writeDeny` | nein | Pfad-Präfixe (Ordner oder Dateien), die der Token nicht schreiben darf, wie bei `readDeny`. Standard: leer. Vor allem für `writeDir: "/"`: Trag ein, was die Geräte des Vaults als Regeln oder Konfiguration behandeln. Die Werkzeug-Beschreibungen nennen diese Einträge nie; ein gesperrtes Schreiben sagt es erst, wenn es passiert. |
 | `readDeny` | nein | Pfad-Präfixe (Ordner oder Dateien), die der Token nicht lesen darf: Ein Eintrag gilt für sich selbst, alles darunter und seinen Namensvetter (`x.md` und `x/`), ohne Groß-/Kleinschreibung. Standard: leer, also ist alles lesbar. Jeder Eintrag ist auch für das Schreiben gesperrt. Mit einem Schreibordner ist ein Eintrag, der sich mit `writeDir` überschneidet (ihn abdeckt, in ihm liegt oder darüber liegt), ein Fehler. |
 | `expiresAt` | ja | ISO-Datum (`2026-12-31`, gemeint ist 00:00 UTC) oder Datum mit Uhrzeit und Zeitzone (`2026-12-31T23:59:00Z`). Danach: 401 und eine Log-Zeile. |
-| `writesPerHour` | nein | Standard 60. Zählt Versuche, deren Pfad und Größe passen (siehe oben). |
+| `writesPerHour` | nein | Standard 60. Zählt Schreibversuche ab dem oben beschriebenen Punkt, auch abgelehnte. |
 | `frontmatter` | nein | Felder, die der Server in jeder Notiz dieses Tokens setzt (Text, Zahl, Ja/Nein; nicht `tags`). |
 | `tags` | nein | Tags, die der Server in jeder Notiz dieses Tokens ergänzt. |
 

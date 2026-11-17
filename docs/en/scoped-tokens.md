@@ -79,8 +79,11 @@ Scoped tokens use their **own listener on their own port**. The main listener (`
     an alias counts in full every time): a few hundred bytes of aliases can stand for billions of
     values for every later reader. `vault_patch` checks the existing note's front matter the same
     way before it patches it;
-  - at most `writesPerHour` write attempts per token (sliding hour). An attempt counts once its
-    path and size pass, also when its front matter or the patch is refused afterwards.
+  - at most `writesPerHour` write attempts per token (sliding hour). A `vault_write` counts once
+    its path passes the checks on the text (write folder, deny lists, the names of every part,
+    length) and the note passes the size limit; a `vault_patch` counts once the note is found and
+    read. Every refusal after that point counts too: a new name that is not plain, a case twin, a
+    symlink on the way, the front matter, a missing heading, the size of the patched note.
 - **Marked notes.** After every scoped write, the server sets the token's `frontmatter` fields and
   adds its `tags` in the final note, even when a write or patch tried to remove them.
 - **Conflicts.** If someone else changed the same note at the same time, the server keeps the
@@ -128,7 +131,7 @@ Fields per token (unknown fields are an error, so a typo cannot silently drop a 
 | `writeDeny` | no | Path prefixes (folders or files) the token cannot write, like `readDeny`. Default: empty. Mainly for `writeDir: "/"`: list what the vault's devices treat as rules or configuration. The tool descriptions never list these entries; a denied write says so when it happens. |
 | `readDeny` | no | Path prefixes (folders or files) the token cannot read: an entry covers itself, everything below it and its namesake (`x.md` and `x/`), compared without regard to case. Default: empty, so everything is readable. Every entry is write-denied as well. With one write folder, an entry that overlaps `writeDir` (covers it, lies inside it, or is its parent) is an error. |
 | `expiresAt` | yes | ISO date (`2026-12-31`, meaning 00:00 UTC) or date-time with offset (`2026-12-31T23:59:00Z`). After that: 401 and a log line. |
-| `writesPerHour` | no | Default 60. Counts attempts that pass the path and size checks (see above). |
+| `writesPerHour` | no | Default 60. Counts write attempts, also refused ones, from the point described above. |
 | `frontmatter` | no | Fields the server sets on every note it writes for this token (strings, numbers, booleans; not `tags`). |
 | `tags` | no | Tags the server adds to every note it writes for this token. |
 
