@@ -9,11 +9,14 @@ import { scopedAuth, scopedTokenOf } from "./auth.js";
 import { WriteBudget } from "./enforce.js";
 import { SCOPED_TOOL_NAMES, registerScopedTools } from "./tools.js";
 import { throttlePull } from "./pull.js";
+import { ScopedSearch } from "./search-runner.js";
 import { pullBestEffort } from "../vault/git.js";
 
 export interface ScopedAppOptions {
   /** Receives the audit and auth-failure lines. Defaults to console.log. */
   log?: (line: string) => void;
+  /** Hard time limit of one scoped search in milliseconds (default SCOPED_SEARCH_TIMEOUT_MS). */
+  searchTimeoutMs?: number;
 }
 
 /**
@@ -25,6 +28,7 @@ export function createScopedApp(config: Config, tokens: ScopedToken[], options: 
   const log = options.log ?? ((line: string) => console.log(line));
   const budget = new WriteBudget();
   const pull = throttlePull(() => pullBestEffort(config.VAULT_PATH));
+  const search = new ScopedSearch(options.searchTimeoutMs);
 
   const app = express();
   app.set("trust proxy", false);
@@ -76,7 +80,7 @@ export function createScopedApp(config: Config, tokens: ScopedToken[], options: 
     };
 
     const server = new McpServer({ name: "obsidian-mcp-remote", version: "0.1.0" });
-    registerScopedTools(server, { config, token, budget, log, pull, reached: () => (reachedTool = true) });
+    registerScopedTools(server, { config, token, budget, log, pull, search, reached: () => (reachedTool = true) });
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     const send = transport.send.bind(transport);
     transport.send = (reply, sendOptions) => {
