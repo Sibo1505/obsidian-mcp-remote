@@ -10,17 +10,45 @@ import { WRITE_DIR, callTool, makeScopedToken, withScopedServer } from "./scoped
 // process (and with it the main listener) with one expensive request. Each test measures how long
 // the event loop of this process was blocked while the request ran.
 
-/** Runs `fn` and reports the longest event-loop block in the meantime, in milliseconds. */
+const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Runs `fn` and reports the longest event-loop block in the meantime, in milliseconds. Two
+ * measurements, the larger one counts: the delay histogram (which only records from its first
+ * sample on, so it can miss a block that starts right after enable()) and the longest gap between
+ * the ticks of a 10 ms timer.
+ */
 async function measureBlock<T>(fn: () => Promise<T>): Promise<{ value: T; maxBlockMs: number }> {
   const histogram = monitorEventLoopDelay({ resolution: 10 });
   histogram.enable();
+  let lastTick = performance.now();
+  let longestGap = 0;
+  const ticker = setInterval(() => {
+    const now = performance.now();
+    longestGap = Math.max(longestGap, now - lastTick);
+    lastTick = now;
+  }, 10);
   try {
+    await pause(30);
     const value = await fn();
-    return { value, maxBlockMs: histogram.max / 1e6 };
+    // Let a block at the very end show up as a gap.
+    await pause(30);
+    return { value, maxBlockMs: Math.max(histogram.max / 1e6, longestGap - 10) };
   } finally {
+    clearInterval(ticker);
     histogram.disable();
   }
 }
+
+test("measureBlock sees a block that starts right after it begins measuring", async () => {
+  const { maxBlockMs } = await measureBlock(async () => {
+    const until = Date.now() + 300;
+    while (Date.now() < until) {
+      // busy: the event loop is blocked for 300 ms
+    }
+  });
+  assert.ok(maxBlockMs >= 250, `measured ${maxBlockMs} ms`);
+});
 
 const MAX_BLOCK_MS = 1000;
 
@@ -102,6 +130,37 @@ test("scoped search_query: ordinary searches still work through the worker", asy
     const unknown = await callTool(baseUrl, "search_query", { query: { no_such_operation: [1] } });
     assert.equal(unknown.isError, true);
     assert.match(unknown.text, /Unrecognized operation no_such_operation/);
+  });
+});
+
+// --- heading lines (read and patch run in the main thread) ---
+
+test("scoped vault_read and vault_patch of a heading in a note with 200 000 spaces do not block the server", async () => {
+  await withScopedServer([makeScopedToken()], async ({ baseUrl }) => {
+    const note = `# ${" ".repeat(200_000)}a\rb\n`;
+    assert.equal((await callTool(baseUrl, "vault_write", { path: `${WRITE_DIR}/spaces.md`, content: note })).isError, false);
+    const read = await measureBlock(() =>
+      callTool(baseUrl, "vault_read", { path: `${WRITE_DIR}/spaces.md`, targetType: "heading", target: "x" }),
+    );
+    assert.match(read.value.text, /Heading not found/);
+    assert.ok(read.maxBlockMs < MAX_BLOCK_MS, `read blocked ${read.maxBlockMs} ms`);
+    const patch = await measureBlock(() =>
+      callTool(baseUrl, "vault_patch", {
+        path: `${WRITE_DIR}/spaces.md`,
+        targetType: "heading",
+        target: "x",
+        operation: "append",
+        content: "more",
+        contentType: "text/markdown",
+        createTargetIfMissing: false,
+        trimTargetWhitespace: false,
+        rejectIfContentPreexists: false,
+        targetScope: "content",
+        targetDelimiter: "::",
+      }),
+    );
+    assert.match(patch.value.text, /Heading not found/);
+    assert.ok(patch.maxBlockMs < MAX_BLOCK_MS, `patch blocked ${patch.maxBlockMs} ms`);
   });
 });
 
