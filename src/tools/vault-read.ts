@@ -1,5 +1,5 @@
 import { z } from "zod";
-import matter from "gray-matter";
+import { parseFrontmatter } from "../vault/frontmatter.js";
 import { readNote, statNote } from "../vault/fs.js";
 import { extractHeadingSection } from "./heading.js";
 
@@ -16,13 +16,13 @@ export async function vaultRead(vaultRoot: string, input: VaultReadInput) {
   const raw = await readNote(vaultRoot, input.path);
 
   if (!input.targetType || !input.target) {
-    const { content, data } = matter(raw);
+    const { content, data } = parseFrontmatter(raw, input.path);
     const stat = await statNote(vaultRoot, input.path);
     return { path: input.path, content, frontmatter: data, stat };
   }
 
   if (input.targetType === "frontmatter") {
-    const { data } = matter(raw);
+    const { data } = parseFrontmatter(raw, input.path);
     if (!(input.target in data)) {
       throw new Error(`Frontmatter key not found: ${input.target}`);
     }
@@ -30,7 +30,7 @@ export async function vaultRead(vaultRoot: string, input: VaultReadInput) {
   }
 
   if (input.targetType === "heading") {
-    const { content } = matter(raw);
+    const { content } = parseFrontmatter(raw, input.path);
     const section = extractHeadingSection(content, input.target, input.targetDelimiter);
     if (!section) {
       throw new Error(`Heading not found: ${input.target}`);

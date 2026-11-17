@@ -1,5 +1,5 @@
 import { z } from "zod";
-import matter from "gray-matter";
+import { JAVASCRIPT_FRONTMATTER_ERROR, parseFrontmatter, stringifyFrontmatter } from "../vault/frontmatter.js";
 import { readNote, writeNote } from "../vault/fs.js";
 import { patchHeadingSection } from "./heading.js";
 
@@ -19,7 +19,8 @@ export const vaultPatchSchema = z.object({
 
 export type VaultPatchInput = z.infer<typeof vaultPatchSchema>;
 
-function parseContentValue(input: VaultPatchInput): unknown {
+/** The patch value: `content` itself, or parsed when `contentType` is JSON. */
+export function parseContentValue(input: VaultPatchInput): unknown {
   if (input.contentType === "application/json") {
     return typeof input.content === "string" ? JSON.parse(input.content) : input.content;
   }
@@ -60,23 +61,22 @@ function patchFrontmatterValue(
   throw new Error(`Cannot ${operation} onto frontmatter key '${target}' of type ${typeof current}`);
 }
 
-export async function vaultPatch(vaultRoot: string, input: VaultPatchInput) {
+/** Applies a patch to a note's text and returns the new text. Pure: reads and writes nothing. */
+export function applyPatch(raw: string, input: VaultPatchInput): string {
   if (input.targetType === "block") {
     throw new Error("targetType 'block' is not supported in v1");
   }
 
-  const raw = await readNote(vaultRoot, input.path);
+  const { content, data, javascript } = parseFrontmatter(raw, input.path);
+  // Patching would rewrite the note without that block: refuse instead of dropping it silently.
+  if (javascript) throw new Error(JAVASCRIPT_FRONTMATTER_ERROR);
   const value = parseContentValue(input);
 
   if (input.targetType === "frontmatter") {
-    const { content, data } = matter(raw);
     const nextData = patchFrontmatterValue(data, input.target, input.operation, value, input.createTargetIfMissing);
-    const output = matter.stringify(content, nextData);
-    await writeNote(vaultRoot, input.path, output);
-    return { path: input.path, patched: true };
+    return stringifyFrontmatter(content, nextData);
   }
 
-  const { content, data } = matter(raw);
   const patchedContent = patchHeadingSection(content, input.target, input.targetDelimiter, {
     operation: input.operation,
     newContent: typeof value === "string" ? value : JSON.stringify(value),
@@ -85,7 +85,14 @@ export async function vaultPatch(vaultRoot: string, input: VaultPatchInput) {
     trimTargetWhitespace: input.trimTargetWhitespace,
     rejectIfContentPreexists: input.rejectIfContentPreexists,
   });
-  const output = Object.keys(data).length > 0 ? matter.stringify(patchedContent, data) : patchedContent;
-  await writeNote(vaultRoot, input.path, output);
+  return Object.keys(data).length > 0 ? stringifyFrontmatter(patchedContent, data) : patchedContent;
+}
+
+export async function vaultPatch(vaultRoot: string, input: VaultPatchInput) {
+  if (input.targetType === "block") {
+    throw new Error("targetType 'block' is not supported in v1");
+  }
+  const raw = await readNote(vaultRoot, input.path);
+  await writeNote(vaultRoot, input.path, applyPatch(raw, input));
   return { path: input.path, patched: true };
 }

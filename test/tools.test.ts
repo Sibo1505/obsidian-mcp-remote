@@ -1,13 +1,18 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import matter from "gray-matter";
+import { parseFrontmatter, stringifyFrontmatter } from "../src/vault/frontmatter.js";
+import { buildVaultIndex, runJsonLogicQuery, SCOPED_SEARCH_LIMITS, SearchLimitError, type SearchLimits } from "../src/vault/search.js";
 import { vaultRead } from "../src/tools/vault-read.js";
 import { vaultWrite } from "../src/tools/vault-write.js";
 import { vaultPatch } from "../src/tools/vault-patch.js";
 import { vaultList } from "../src/tools/vault-list.js";
 import { searchQuery } from "../src/tools/search-query.js";
 import { writeNote } from "../src/vault/fs.js";
+import { parseHeadingLine } from "../src/tools/heading.js";
 import { withTempVault } from "./helpers.js";
 
 // --- vault_write ---
@@ -70,6 +75,137 @@ test("vaultRead with targetType heading throws when heading is missing", async (
     await writeNote(vaultRoot, "note.md", "# Top\nBody");
     await assert.rejects(() => vaultRead(vaultRoot, { path: "note.md", targetType: "heading", target: "Nope" }));
   });
+});
+
+// gray-matter ships a "javascript" front matter engine that runs the block through eval() when a
+// note starts with "---js" or "---javascript". Anyone who can write a note could otherwise run code
+// inside this server on the next read or search.
+const JS_FRONTMATTER_NOTE = "---js\n{ title: (globalThis.__frontmatterEvaluated = true, 'x') }\n---\nBody";
+
+test("vaultRead never evaluates JavaScript front matter", async () => {
+  await withTempVault(async (vaultRoot) => {
+    const g = globalThis as { __frontmatterEvaluated?: boolean };
+    delete g.__frontmatterEvaluated;
+    await writeNote(vaultRoot, "note.md", JS_FRONTMATTER_NOTE);
+    const result = await vaultRead(vaultRoot, { path: "note.md" });
+    assert.equal(g.__frontmatterEvaluated, undefined);
+    assert.deepEqual(result.frontmatter, {});
+  });
+});
+
+test("searchQuery never evaluates JavaScript front matter", async () => {
+  await withTempVault(async (vaultRoot) => {
+    const g = globalThis as { __frontmatterEvaluated?: boolean };
+    delete g.__frontmatterEvaluated;
+    await writeNote(vaultRoot, "note.md", JS_FRONTMATTER_NOTE);
+    await searchQuery(vaultRoot, { query: { "==": [1, 1] } });
+    assert.equal(g.__frontmatterEvaluated, undefined);
+  });
+});
+
+// Second layer behind the safe helpers: loading src/vault/frontmatter.ts also replaces the engine in
+// gray-matter's shared registry, so even a direct call without options cannot reach eval().
+test("even a direct gray-matter call without options never evaluates JavaScript front matter", () => {
+  const g = globalThis as { __frontmatterEvaluated?: boolean };
+  delete g.__frontmatterEvaluated;
+  const unique = `${process.pid}-${Date.now()}-${Math.random()}`;
+  matter(`${JS_FRONTMATTER_NOTE} parse-${unique}`);
+  try {
+    // Usually throws (JavaScript front matter cannot be written back); what matters here is only
+    // that parsing the string first did not run it.
+    matter.stringify(`${JS_FRONTMATTER_NOTE} stringify-${unique}`, { title: "t" });
+  } catch {
+    // expected
+  }
+  assert.equal(g.__frontmatterEvaluated, undefined);
+});
+
+test("front matter parsing and writing never fill gray-matter's module-level cache", () => {
+  const cache = (matter as unknown as { cache: Record<string, unknown> }).cache;
+  const before = Object.keys(cache).length;
+  const marker = `cache-probe-${Date.now()}`;
+  parseFrontmatter(`---\ntitle: ${marker}\n---\nBody ${marker}`);
+  stringifyFrontmatter(`---\nnested: ${marker}\n---\nBody ${marker}`, { title: marker });
+  assert.equal(Object.keys(cache).length, before);
+});
+
+test("writing front matter keeps the body as it is, even when the body starts with a front matter block", () => {
+  const body = "---\nnested: 1\n---\nBody\n";
+  assert.equal(stringifyFrontmatter(body, { title: "t" }), `---\ntitle: t\n---\n${body}`);
+  assert.equal(stringifyFrontmatter("Body", {}), "Body\n");
+});
+
+test("only src/vault/frontmatter.ts talks to gray-matter", async () => {
+  const srcRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src");
+  const files = (await readdir(srcRoot, { recursive: true })).filter((f) => f.endsWith(".ts"));
+  const importers = [];
+  for (const file of files) {
+    const text = await readFile(path.join(srcRoot, file), "utf-8");
+    if (/from\s+["']gray-matter["']|require\(\s*["']gray-matter["']\s*\)/.test(text)) importers.push(file.split(path.sep).join("/"));
+  }
+  assert.deepEqual(importers, ["vault/frontmatter.ts"]);
+});
+
+/** Collects console.error lines while `fn` runs. */
+async function captureErrors(fn: () => Promise<void>): Promise<string[]> {
+  const lines: string[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => lines.push(args.map(String).join(" "));
+  try {
+    await fn();
+  } finally {
+    console.error = original;
+  }
+  return lines;
+}
+
+test("searchQuery keeps answering when a note has front matter that is not valid YAML, and logs only its path", async () => {
+  await withTempVault(async (vaultRoot) => {
+    await writeNote(vaultRoot, "broken.md", "---\ntitle: [unclosed-secret-marker\n---\nBroken body");
+    await writeNote(vaultRoot, "fine.md", "---\nstatus: done\n---\nFine");
+    const logs = await captureErrors(async () => {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const byStatus = await searchQuery(vaultRoot, { query: { "==": [{ var: "frontmatter.status" }, "done"] } });
+        assert.deepEqual(byStatus.map((r) => r.filename), ["fine.md"]);
+        // The broken note is still searched, as plain text without front matter.
+        const byText = await searchQuery(vaultRoot, { query: { regexp: ["Broken body", { var: "content" }] } });
+        assert.deepEqual(byText.map((r) => r.filename), ["broken.md"]);
+      }
+    });
+    assert.ok(logs.some((l) => l.includes('"broken.md"')));
+    assert.ok(logs.every((l) => !l.includes("unclosed-secret-marker")));
+  });
+});
+
+test("vaultRead returns a note with invalid YAML front matter as plain body, every time", async () => {
+  await withTempVault(async (vaultRoot) => {
+    const raw = "---\ntitle: [unclosed\n---\nBody";
+    await writeNote(vaultRoot, "broken.md", raw);
+    await captureErrors(async () => {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const result = await vaultRead(vaultRoot, { path: "broken.md" });
+        assert.equal(result.content, raw);
+        assert.deepEqual(result.frontmatter, {});
+      }
+    });
+  });
+});
+
+test("front matter that is not a mapping (text, number, date, list) is body, not front matter", () => {
+  for (const raw of [
+    "---\n\nMy meeting notes\n",
+    "---\nIntro paragraph\n---\n# Notes",
+    "---\n- first\n- second\n---\nBody",
+    "---\n42\n---\nBody",
+    "---\n2024-01-01\n---\nBody",
+  ]) {
+    assert.deepEqual(parseFrontmatter(raw), { content: raw, data: {}, javascript: false }, JSON.stringify(raw));
+  }
+  // An empty block (only comments, or null, which gray-matter itself reads as empty) stays an
+  // empty front matter block, as before.
+  for (const raw of ["---\n---\nBody", "---\n# note\n---\nBody", "---\nnull\n---\nBody"]) {
+    assert.deepEqual(parseFrontmatter(raw), { content: "Body", data: {}, javascript: false }, JSON.stringify(raw));
+  }
 });
 
 test("vaultRead with targetType block explicitly rejects instead of silently falling back", async () => {
@@ -284,6 +420,152 @@ test("vaultPatch with targetType block is explicitly rejected", async () => {
   });
 });
 
+// --- heading lines: same matches, linear time ---
+
+/** Small seeded generator, so random cases are the same on every run. */
+function seededRandom(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+test("heading lines are recognized exactly as by /^(#{1,6})\\s+(.*)$/ (level and trimmed text)", () => {
+  // The rule the server has always used, as the reference.
+  const reference = (line: string) => {
+    const match = /^(#{1,6})\s+(.*)$/.exec(line);
+    return match ? { level: match[1].length, text: match[2].trim() } : undefined;
+  };
+  const alphabet = ["#", " ", "\t", "\r", " ", " ", "　", "a", "b", "-"];
+  const random = seededRandom(20261117);
+  const pick = (n: number) => Math.floor(random() * n);
+  let headings = 0;
+  for (let i = 0; i < 100_000; i++) {
+    let line = "#".repeat(1 + pick(7));
+    for (let j = 0, length = 1 + pick(12); j < length; j++) line += alphabet[pick(alphabet.length)];
+    const expected = reference(line);
+    if (expected) headings++;
+    assert.deepEqual(parseHeadingLine(line), expected, JSON.stringify(line));
+  }
+  assert.ok(headings > 10_000, `only ${headings} of the random lines were headings`);
+});
+
+test("a heading line with 200 000 spaces before a line break is handled in linear time (read and patch)", async () => {
+  await withTempVault(async (vaultRoot) => {
+    // "\r" cannot be matched by "." in the heading text, so the line is no heading; a backtracking
+    // rule would try every split of the spaces first (quadratic).
+    await writeNote(vaultRoot, "spaces.md", `# ${" ".repeat(200_000)}a\rb\n`);
+    let started = Date.now();
+    await assert.rejects(
+      () => vaultRead(vaultRoot, { path: "spaces.md", targetType: "heading", target: "x", targetDelimiter: "::" }),
+      /Heading not found/,
+    );
+    assert.ok(Date.now() - started < 1000, `read took ${Date.now() - started} ms`);
+    started = Date.now();
+    await assert.rejects(
+      () =>
+        vaultPatch(vaultRoot, {
+          path: "spaces.md",
+          operation: "append",
+          targetType: "heading",
+          target: "x",
+          content: "more",
+          contentType: "text/markdown",
+          createTargetIfMissing: false,
+          trimTargetWhitespace: false,
+          rejectIfContentPreexists: false,
+          targetScope: "content",
+          targetDelimiter: "::",
+        }),
+      /Heading not found/,
+    );
+    assert.ok(Date.now() - started < 1000, `patch took ${Date.now() - started} ms`);
+  });
+});
+
+// --- wikilink resolution: same backlinks, linear time ---
+
+/**
+ * Backlinks as the server has always resolved them, as the reference: a link names a file
+ * ("plan", "Plan.md", "folder/plan"); only the last part counts, compared in lower case, and the
+ * first matching path in index order wins.
+ */
+function referenceBacklinks(index: { path: string; links: string[] }[]): [string, string[]][] {
+  const allPaths = index.map((note) => note.path);
+  const backlinks = new Map<string, Set<string>>();
+  for (const note of index) {
+    for (const link of note.links) {
+      const base = (link.split("/").pop() ?? link).toLowerCase();
+      const wanted = base.endsWith(".md") ? base : `${base}.md`;
+      const target = allPaths.find((p) => (p.split("/").pop() ?? p).toLowerCase() === wanted);
+      if (!target) continue;
+      if (!backlinks.has(target)) backlinks.set(target, new Set());
+      backlinks.get(target)!.add(note.path);
+    }
+  }
+  return index.map((note) => [note.path, [...(backlinks.get(note.path) ?? [])]]);
+}
+
+test("wikilinks resolve to the same backlinks as before (case, same names in several folders, .md, paths)", async () => {
+  const folders = ["", "Projects", "projects-old", "Area/Sub", "area/other", "Notes"];
+  const stems = ["Plan", "plan", "PLAN", "idea", "Idea", "note", "Note-2", "x.y"];
+  for (const seed of [1, 2, 3]) {
+    await withTempVault(async (vaultRoot) => {
+      const random = seededRandom(seed);
+      const pick = <T>(items: T[]) => items[Math.floor(random() * items.length)];
+      const taken = new Set<string>();
+      for (let i = 0; i < 80; i++) {
+        const folder = pick(folders);
+        const stem = pick(stems);
+        // One file per name and folder in any case: Windows and macOS could not hold both.
+        const key = `${folder}/${stem}`.toLowerCase();
+        if (taken.has(key)) continue;
+        taken.add(key);
+        const links = Array.from({ length: 1 + Math.floor(random() * 5) }, () => {
+          const name = pick([...stems, "missing", "Missing.MD"]);
+          const variant = pick([name, name.toUpperCase(), name.toLowerCase(), `${name}.md`, `${pick(folders)}/${name}`]);
+          return `[[${variant}${pick(["", "|alias", "#Heading"])}]]`;
+        });
+        await mkdir(path.join(vaultRoot, folder), { recursive: true });
+        await writeNote(vaultRoot, `${folder ? `${folder}/` : ""}${stem}.md`, `# ${stem}\n${links.join(" ")}\n`);
+      }
+      const index = await buildVaultIndex(vaultRoot);
+      assert.deepEqual(
+        index.map((note) => [note.path, note.backlinks]),
+        referenceBacklinks(index),
+        `seed ${seed}`,
+      );
+      // The cases this is about really occur: a name in several folders, and a backlink to one.
+      const names = index.map((note) => (note.path.split("/").pop() ?? "").toLowerCase());
+      assert.ok(names.length > new Set(names).size, `seed ${seed}: no name in several folders`);
+      assert.ok(index.some((note) => note.backlinks.length > 0), `seed ${seed}: no backlinks`);
+    });
+  }
+});
+
+test("a search over 1 000 notes and 5 notes with 22 000 wikilinks each takes under 1.5 s (was 11 s)", async () => {
+  await withTempVault(async (vaultRoot) => {
+    for (let i = 0; i < 1000; i++) {
+      await mkdir(path.join(vaultRoot, `area-${i % 20}`), { recursive: true });
+      await writeNote(vaultRoot, `area-${i % 20}/note-${i}.md`, `# Note ${i}\n\nSee [[note-${(i + 1) % 1000}]].\n`);
+    }
+    for (let j = 0; j < 5; j++) {
+      let body = "";
+      for (let i = 0; Buffer.byteLength(body) < 200 * 1024 - 200; i++) body += `[[l${j}x${i}]]`;
+      await writeNote(vaultRoot, `inbox/links-${j}.md`, body);
+    }
+    const started = Date.now();
+    const results = await searchQuery(vaultRoot, { query: { "==": [{ var: "path" }, "area-1/note-1.md"] } });
+    const took = Date.now() - started;
+    assert.deepEqual(results.map((r) => r.filename), ["area-1/note-1.md"]);
+    assert.ok(took < 1500, `search took ${took} ms`);
+  });
+});
+
 // --- search_query ---
 
 test("searchQuery finds notes matching a frontmatter equality check", async () => {
@@ -317,6 +599,16 @@ test("searchQuery supports the custom glob operator against a note's path", asyn
   });
 });
 
+test("searchQuery's glob operator refuses a pattern that is not text, also after the same text was used", async () => {
+  await withTempVault(async (vaultRoot) => {
+    await writeNote(vaultRoot, "a.md", "Body");
+    const notText = { glob: [["*.md"], { var: "path" }] };
+    await assert.rejects(() => searchQuery(vaultRoot, { query: notText }), /invalid pattern/);
+    assert.equal((await searchQuery(vaultRoot, { query: { glob: ["*.md", { var: "path" }] } })).length, 1);
+    await assert.rejects(() => searchQuery(vaultRoot, { query: notText }), /invalid pattern/);
+  });
+});
+
 test("searchQuery supports the custom regexp operator for a legitimate pattern", async () => {
   await withTempVault(async (vaultRoot) => {
     await writeNote(vaultRoot, "a.md", "TODO: finish this");
@@ -336,6 +628,82 @@ test("searchQuery's regexp operator rejects a catastrophic-backtracking pattern 
     // rather than actually running the regex against the crafted input.
     assert.ok(Date.now() - start < 1000);
     assert.equal(results.length, 0);
+  });
+});
+
+// --- search limits (used for scoped tokens; the main listener runs without them) ---
+
+const limits = (overrides: Partial<SearchLimits> = {}): SearchLimits => ({ ...SCOPED_SEARCH_LIMITS, ...overrides });
+
+test("search limits: more matches than allowed is an error, not a silently cut list", async () => {
+  await withTempVault(async (vaultRoot) => {
+    for (const name of ["a", "b", "c"]) await writeNote(vaultRoot, `${name}.md`, name);
+    await assert.rejects(() => runJsonLogicQuery(vaultRoot, { "==": [1, 1] }, undefined, limits({ maxResults: 2 })), SearchLimitError);
+    assert.equal((await runJsonLogicQuery(vaultRoot, { "==": [1, 1] }, undefined, limits({ maxResults: 3 }))).length, 3);
+  });
+});
+
+test("search limits: a result larger than the byte budget is an error", async () => {
+  await withTempVault(async (vaultRoot) => {
+    await writeNote(vaultRoot, "big.md", "x".repeat(500));
+    await assert.rejects(
+      () => runJsonLogicQuery(vaultRoot, { var: "content" }, undefined, limits({ maxResultBytes: 100 })),
+      SearchLimitError,
+    );
+  });
+});
+
+test("search limits: glob braces stay literal and long glob patterns are refused, also when computed", async () => {
+  await withTempVault(async (vaultRoot) => {
+    await mkdir(path.join(vaultRoot, "projects"));
+    await writeNote(vaultRoot, "projects/a.md", "---\npattern: 'projects/{a,b}.md'\n---\nA");
+    const braces = { glob: ["projects/{a,b}.md", { var: "path" }] };
+    assert.deepEqual((await runJsonLogicQuery(vaultRoot, braces)).map((r) => r.filename), ["projects/a.md"]);
+    assert.deepEqual(await runJsonLogicQuery(vaultRoot, braces, undefined, limits()), []);
+    const fromNote = { glob: [{ var: "frontmatter.pattern" }, { var: "path" }] };
+    assert.deepEqual(await runJsonLogicQuery(vaultRoot, fromNote, undefined, limits()), []);
+    const long = { glob: [`${"*".repeat(201)}`, { var: "path" }] };
+    await assert.rejects(() => runJsonLogicQuery(vaultRoot, long, undefined, limits()), SearchLimitError);
+  });
+});
+
+test("search limits: query size, depth and node count are capped", async () => {
+  await withTempVault(async (vaultRoot) => {
+    await writeNote(vaultRoot, "a.md", "a");
+    let deep: object = { var: "path" };
+    for (let i = 0; i < 25; i++) deep = { "!": [deep] };
+    const wide = { or: Array.from({ length: 600 }, () => false) };
+    const big = { "==": [{ var: "content" }, "y".repeat(9000)] };
+    for (const query of [deep, wide, big]) {
+      await assert.rejects(() => runJsonLogicQuery(vaultRoot, query, undefined, limits()), SearchLimitError);
+      await assert.doesNotReject(() => runJsonLogicQuery(vaultRoot, query));
+    }
+  });
+});
+
+test("search limits: a search that runs past its time budget is stopped with an error", async () => {
+  await withTempVault(async (vaultRoot) => {
+    await writeNote(vaultRoot, "a.md", "a");
+    await assert.rejects(
+      () => runJsonLogicQuery(vaultRoot, { "==": [1, 1] }, undefined, limits({ timeBudgetMs: -1 })),
+      SearchLimitError,
+    );
+  });
+});
+
+test("search limits: the time budget also covers reading the notes", async () => {
+  await withTempVault(async (vaultRoot) => {
+    await writeNote(vaultRoot, "a.md", "a");
+    const slowFilter = async () => {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      return true;
+    };
+    await assert.rejects(
+      () => runJsonLogicQuery(vaultRoot, { "==": [1, 1] }, slowFilter, limits({ timeBudgetMs: 50 })),
+      SearchLimitError,
+    );
+    // Without limits (the main listener) the same slow filter is fine.
+    assert.equal((await runJsonLogicQuery(vaultRoot, { "==": [1, 1] }, slowFilter)).length, 1);
   });
 });
 

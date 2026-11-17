@@ -1,4 +1,15 @@
-const HEADING_RE = /^(#{1,6})\s+(.*)$/;
+// The same rule as /^(#{1,6})\s+(.*)$/, with the whitespace run made atomic (a lookahead captures
+// it, the back-reference consumes exactly that): it can no longer hand spaces back to (.*). The
+// old form, on a line with many spaces followed by a character "." does not match ("\r", U+2028),
+// tried every split of the spaces before failing: quadratic, 28 s for 200 000 spaces. Matches and
+// captures are unchanged; the heading text is now group 3.
+const HEADING_RE = /^(#{1,6})(?=(\s+))\2(.*)$/;
+
+/** The level and trimmed text of a Markdown heading line, or undefined when the line is no heading. */
+export function parseHeadingLine(line: string): { level: number; text: string } | undefined {
+  const match = HEADING_RE.exec(line);
+  return match ? { level: match[1].length, text: match[3].trim() } : undefined;
+}
 
 interface HeadingMatch {
   lines: string[];
@@ -15,10 +26,9 @@ function findHeadingSection(content: string, target: string, delimiter: string):
   const stack: { level: number; text: string }[] = [];
 
   for (let i = 0; i < lines.length; i++) {
-    const match = HEADING_RE.exec(lines[i]);
-    if (!match) continue;
-    const level = match[1].length;
-    const text = match[2].trim();
+    const heading = parseHeadingLine(lines[i]);
+    if (!heading) continue;
+    const { level, text } = heading;
 
     while (stack.length > 0 && stack[stack.length - 1].level >= level) {
       stack.pop();
@@ -29,8 +39,8 @@ function findHeadingSection(content: string, target: string, delimiter: string):
     if (tail.length === segments.length && tail.every((t, idx) => t === segments[idx])) {
       let contentEnd = lines.length;
       for (let j = i + 1; j < lines.length; j++) {
-        const nextMatch = HEADING_RE.exec(lines[j]);
-        if (nextMatch && nextMatch[1].length <= level) {
+        const next = parseHeadingLine(lines[j]);
+        if (next && next.level <= level) {
           contentEnd = j;
           break;
         }

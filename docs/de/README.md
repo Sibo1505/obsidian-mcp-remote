@@ -15,6 +15,9 @@ gibt — kein laufendes Obsidian nötig, kein Local-REST-API-Plugin, funktionier
 - Jede Änderung landet in Git — voll revertierbar, keine Blackbox
 - Eigene Netzwerk-Identität (Tailscale-Sidecar) statt geteiltem Docker-Netz mit anderen Diensten
 - Push-Benachrichtigungen bei verdächtigen Login-Versuchen
+- Optional [eingeschränkte Tokens](scoped-tokens.md): ein eigener Port, über den ein Agent auf einem
+  anderen Rechner den Vault lesen und in einen Ordner schreiben kann, oder überall außer in den
+  Pfaden, die du sperrst
 - CI-Security-Scanning (CodeQL, gitleaks, Dependabot) von Anfang an aktiv
 
 Details dazu: [Wie der Server funktioniert](how-it-works.md).
