@@ -61,7 +61,7 @@ test('writeDir "/" opens the whole vault; writeDeny is normalized and every read
     envWith([
       tokenEntry({
         writeDir: "/",
-        writeDeny: ["03-resources/claude-config/", "./.claude", "private"],
+        writeDeny: ["resources/agent-config/", "./.claude", "private"],
         // With the whole vault writable, readDeny cannot overlap a write folder: no error.
         readDeny: ["private/", "projects/secret-plan.md"],
       }),
@@ -73,7 +73,7 @@ test('writeDir "/" opens the whole vault; writeDeny is normalized and every read
   const [token] = setup.tokens;
   assert.equal(token.writeDir, "");
   assert.deepEqual(token.readDeny, ["private", "projects/secret-plan.md"]);
-  assert.deepEqual(token.writeDeny, ["03-resources/claude-config", ".claude", "private", "projects/secret-plan.md"]);
+  assert.deepEqual(token.writeDeny, ["resources/agent-config", ".claude", "private", "projects/secret-plan.md"]);
 });
 
 test("with one write folder, readDeny entries are write-denied as well and writeDeny defaults to empty", () => {
