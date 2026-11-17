@@ -221,13 +221,17 @@ test("whole-vault token: a write may create up to three new plain folders, anywh
   });
 });
 
-test("whole-vault token: the tool description names the denied paths", async () => {
+test("whole-vault token: the tool descriptions never name the denied paths", async () => {
   await withWholeVault(async ({ baseUrl }) => {
     const res = await mcpRequest(baseUrl, makeScopedToken().secret, "tools/list");
     const tools = (res.body as { result: { tools: { name: string; description: string }[] } }).result.tools;
     const write = tools.find((tool) => tool.name === "vault_write")!;
     assert.match(write.description, /anywhere in the vault/);
-    assert.match(write.description, /resources\/rules/);
+    assert.match(write.description, /paths this token may not write/);
+    // writeDeny ["resources/rules", "private"], readDeny ["private"]: a client learns neither.
+    for (const tool of tools) {
+      assert.doesNotMatch(tool.description, /resources\/rules|private/i, tool.name);
+    }
   });
 });
 
