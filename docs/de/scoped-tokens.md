@@ -4,8 +4,9 @@ Optional. Mit einem eingeschränkten Token kann ein Agent auf einem anderen Rech
 Tailnet **den Vault lesen und entweder in genau einen Ordner schreiben oder überall außer in den
 Pfaden, die du sperrst**. Typische Fälle: Ein Agent auf einem Server liest deine Notizen und Regeln
 und legt eigene Notizen in einen Eingangsordner, kann aber sonst nichts ändern
-(`writeDir: "notes-inbox"`). Oder er darf Notizen dort ablegen, wo sie hingehören, aber nie die
-Agent-Konfiguration oder deine Regel-Notizen anfassen (`writeDir: "/"` mit `writeDeny`).
+(`writeDir: "notes-inbox"`). Oder er darf neue Notizen dort ablegen, wo sie hingehören, und nur
+die Notizen ändern, die er selbst geschrieben hat, aber nie die Agent-Konfiguration oder deine
+Regel-Notizen anfassen (`writeDir: "/"` mit `writeDeny`).
 
 Eingeschränkte Tokens nutzen einen **eigenen Listener auf einem eigenen Port**. Der Haupt-Listener
 (`PORT`, OAuth und `TOKEN_INTERNAL`) bleibt genau so, wie er ist.
@@ -85,6 +86,17 @@ Eingeschränkte Tokens nutzen einen **eigenen Listener auf einem eigenen Port**.
   - kein Symlink auf dem Weg vom Vault bis zur Notiz, und die Notiz selbst darf kein Symlink sein
     und keine weiteren Hardlinks haben. Der aufgelöste Ordner muss in `realpath(vault/writeDir)`
     liegen;
+  - **nur eigene vorhandene Notizen** mit `modifyExisting: "own"`, dem Standard für
+    `writeDir: "/"`. Ist der ganze Vault beschreibbar, legt ein Token Notizen überall an, ändert
+    aber nur Notizen, die sein eigenes Frontmatter tragen. Mit `modifyExisting: "any"` darf er
+    mehr. Eigen ist eine Notiz, wenn sie alle `frontmatter`-Felder des Tokens mit genau diesem Wert
+    und Typ trägt (`false` ist nicht `"false"`). Eine Notiz ohne Frontmatter, mit anderen Werten
+    oder mit Frontmatter, das kein gültiges YAML ist, gehört jemand anderem: `vault_write` und jedes
+    `vault_patch` lehnen sie ab (`denied:foreign-note`) und bitten den Client, eine neue Notiz
+    anzulegen und sie zu verlinken. Der Server liest die vorhandene Notiz, ohne einem Symlink zu
+    folgen, und nur bis 2 MB. Prüfung, Schreiben und Commit laufen unter einer Sperre, also kann
+    kein Pull dazwischen eine andere Fassung der Notiz einspielen. Entfernt ein Mensch die Felder
+    des Tokens aus einer Notiz, gehört sie ihm, und der Token kann sie nicht mehr ändern;
   - höchstens 200 KB (UTF-8) pro Notiz, bei `vault_patch` für das Ergebnis;
   - kein Frontmatter, das eine Liste oder ein Mapping über einen YAML-Alias (`*name`) wiederverwendet,
     und keines mit mehr als 10 000 Werten oder etwa 2 MB, wenn es ausgeschrieben wird (ein langer
@@ -97,14 +109,16 @@ Eingeschränkte Tokens nutzen einen **eigenen Listener auf einem eigenen Port**.
     sobald der Pfad die Prüfungen am Text besteht (Schreibordner, Sperrlisten, die Namen aller
     Teile, Länge) und die Notiz die Größengrenze; ein `vault_patch` zählt, sobald die Notiz gefunden
     und gelesen ist. Jede Ablehnung danach zählt mit: ein neuer Name, der nicht einfach ist, ein
-    Groß/klein-Zwilling, ein Symlink auf dem Weg, das Frontmatter, eine fehlende Überschrift, die
-    Größe der geänderten Notiz.
+    Groß/klein-Zwilling, ein Symlink auf dem Weg, eine vorhandene Notiz, die der Token nicht
+    geschrieben hat, das Frontmatter, eine fehlende Überschrift, die Größe der geänderten Notiz.
 - **Markierte Notizen.** Nach jedem eingeschränkten Schreiben setzt der Server die
   `frontmatter`-Felder des Tokens und ergänzt seine `tags` in der fertigen Notiz, auch wenn ein
-  Schreiben oder Patch sie entfernen wollte.
+  Schreiben oder Patch sie entfernen wollte. Mit `modifyExisting: "own"` entscheiden diese Felder
+  auch, welche vorhandenen Notizen der Token später ändern darf.
 - **Konflikte.** Hat jemand dieselbe Notiz gleichzeitig geändert, behält der Server die Fassung des
-  Tokens als `<name>-conflict-<jjjjmmtthhmmss>.md` daneben, nach denselben Regeln. Der Name wird
-  vorher auf einen einfachen Namen gebracht (`My Idea.md` → `my-idea-conflict-….md`).
+  Tokens als `<name>-conflict-<jjjjmmtthhmmss>.md` daneben, nach denselben Regeln: Mit
+  `modifyExisting: "own"` ersetzt eine Kopie nie eine Notiz, die der Token nicht geschrieben hat.
+  Der Name wird vorher auf einen einfachen Namen gebracht (`My Idea.md` → `my-idea-conflict-….md`).
 - **Nachvollziehbar.** Der Commit-Text beginnt mit `<name>: vault_write <pfad>`,
   `<name>: vault_patch <pfad>` oder `<name>: conflict quarantined <pfad>`. Jede Anfrage schreibt
   eine Log-Zeile, nie mit Inhalt oder Token. Ein Werkzeug-Aufruf, der abgelehnt wird, bevor das
@@ -148,9 +162,10 @@ wegfallen lässt):
 | `writeDeny` | nein | Pfad-Präfixe (Ordner oder Dateien), die der Token nicht schreiben darf, wie bei `readDeny`. Standard: leer. Vor allem für `writeDir: "/"`: Trag ein, was die Geräte des Vaults als Regeln oder Konfiguration behandeln. Die Werkzeug-Beschreibungen nennen diese Einträge nie; ein gesperrtes Schreiben sagt es erst, wenn es passiert. |
 | `readDeny` | nein | Pfad-Präfixe (Ordner oder Dateien), die der Token nicht lesen darf: Ein Eintrag gilt für sich selbst, alles darunter und seinen Namensvetter (`x.md` und `x/`), ohne Groß-/Kleinschreibung. Standard: leer, also ist alles lesbar. Jeder Eintrag ist auch für das Schreiben gesperrt. Mit einem Schreibordner ist ein Eintrag, der sich mit `writeDir` überschneidet (ihn abdeckt, in ihm liegt oder darüber liegt), ein Fehler. |
 | `expiresAt` | ja | ISO-Datum (`2026-12-31`, gemeint ist 00:00 UTC) oder Datum mit Uhrzeit und Zeitzone (`2026-12-31T23:59:00Z`). Danach: 401 und eine Log-Zeile. |
-| `writesPerHour` | nein | Standard 60. Zählt Schreibversuche ab dem oben beschriebenen Punkt, auch abgelehnte. |
-| `frontmatter` | nein | Felder, die der Server in jeder Notiz dieses Tokens setzt (Text, Zahl, Ja/Nein; nicht `tags`). |
+| `writesPerHour` | nein | Standard 60. Zählt Schreibversuche ab dem oben beschriebenen Punkt, auch abgelehnte. Mit `writeDir: "/"` setzt du den Wert deutlich unter den Standard, auf das, was der Agent wirklich braucht: Er begrenzt, wie viele Notizen ein getäuschter Agent in einer Stunde schreiben kann. |
+| `frontmatter` | nein | Felder, die der Server in jeder Notiz dieses Tokens setzt (Text, Zahl, Ja/Nein; nicht `tags`). Mit `modifyExisting: "own"` kennzeichnen sie auch die Notizen, die der Token ändern darf. |
 | `tags` | nein | Tags, die der Server in jeder Notiz dieses Tokens ergänzt. |
+| `modifyExisting` | nein | `"own"`: nur vorhandene Notizen ändern, die alle `frontmatter`-Felder dieses Tokens mit genau diesem Wert tragen; `"any"`: jede beschreibbare Notiz. Standard `"own"` mit `writeDir: "/"`, `"any"` mit einem Schreibordner. `"own"` braucht mindestens ein `frontmatter`-Feld, sonst startet der eingeschränkte Listener nicht. Neue Notizen sind in beiden Fällen erlaubt. |
 
 Beispiel (`.env`; die einfachen Anführungszeichen halten das JSON zusammen):
 
@@ -166,6 +181,9 @@ Derselbe Token für den ganzen Vault, aber ohne einen Regel-Ordner und eine einz
 SCOPED_TOKENS_JSON='[{"name":"agent","tokenEnv":"TOKEN_AGENT","allowFrom":["100.64.0.10"],"writeDir":"/","writeDeny":["rules/","projects/house-rules.md"],"readDeny":["private/"],"expiresAt":"2026-12-31","frontmatter":{"source":"agent"},"tags":["agent"]}]'
 ```
 
+Er ändert nur die vorhandenen Notizen, die er selbst geschrieben hat (`modifyExisting` ist
+standardmäßig `"own"`, erkannt an `"source":"agent"`).
+
 Diese Werte kommen in den Container (`docker-compose.yml` gibt `SCOPED_PORT`, `SCOPED_HOST` und
 `SCOPED_TOKENS_JSON` schon weiter; deine Geheimnis-Variable ergänzt du daneben). Mit dem
 Tailscale-Sidecar ist der Container über seine Tailnet-Adresse erreichbar. Lege für den
@@ -173,6 +191,51 @@ eingeschränkten Port also **kein** `ports:`-Mapping an.
 
 Auf dem Agent-Rechner schickst du das Geheimnis als `Authorization: Bearer <geheimnis>` an
 `http://<Tailnet-Adresse des Servers>:3001/mcp`.
+
+## Was sperren
+
+Mit `writeDir: "/"` entscheiden die Sperrlisten, was ein Agent nicht erreicht. „Nur eigene
+Notizen“ hält ihn davon ab, deine vorhandenen Notizen zu ändern. Eine *neue* Notiz kann er aber in
+jeden Ordner legen, der nicht gesperrt ist, und wer diesen Ordner später liest, sieht sie. Trag
+deshalb in `writeDeny` ein (oder in `readDeny`, das auch das Schreiben sperrt):
+
+- Ordner, deren Notizen Agents als Regeln oder Briefings lesen: Anweisungen als Notizen, ein
+  Ordner, den ein Agent als Aufgaben abarbeitet, ein Eingang, den ein anderer Agent verarbeitet;
+- Ordner mit Vorlagen: Eine Vorlage wird in neue Notizen kopiert, ihr Text verbreitet sich also;
+- Wissensbasen von Skills oder Werkzeugen: Notizen, die ein Agent lädt, bevor er handelt;
+- Projektpläne und Entscheidungs-Logs, denen Menschen oder Agents folgen;
+- jede Notiz und jeden Ordner, aus dem ein Agent Befehle, Einstellungen oder Code übernimmt.
+
+Lesen nach Abschnitt (`vault_read` mit `targetType: "heading"`) liefert nur diesen Abschnitt,
+nicht das Frontmatter der Notiz. Wer nur einen Abschnitt liest, sieht also die Markierung nicht,
+die eine Notiz eines eingeschränkten Tokens von deiner unterscheidet. Agents, die Abschnitte von
+Notizen lesen, die ein eingeschränkter Token geschrieben haben könnte, lesen deshalb zuerst das
+Markierungsfeld (`targetType: "frontmatter"`, `target: "source"`).
+
+Beim Start schreibt der Server für jeden Sperr-Eintrag, der auf nichts im Vault passt, eine
+Log-Zeile, zum Beispiel
+`Scoped token "agent": writeDeny entry "rule" matches nothing in the vault (a typo?)`. So ein
+Eintrag schützt nichts, bis es den Pfad gibt. Die Zeile steht nur im Server-Log, nie bei einem
+Client.
+
+## Schreibvorgänge zurücknehmen
+
+Jeder Schreibvorgang eines eingeschränkten Tokens ist ein eigener Commit, dessen Text mit dem Namen
+des Tokens beginnt. So findest du sie in einem Klon des Vaults und nimmst sie zurück:
+
+```bash
+# alle Commits des Tokens "agent", die neuesten zuerst
+git log --grep '^agent: ' --format='%h %ad %s' --date=iso
+# einen zurücknehmen
+git revert --no-edit <commit>
+# alles seit einem Datum zurücknehmen (die neuesten zuerst, damit spätere Änderungen vorangehen)
+git log --grep '^agent: ' --since=2026-12-01 --format=%H | xargs git revert --no-edit
+git push
+```
+
+Prüf die Liste, bevor du zurücknimmst: `--grep` findet jeden Commit, in dessen Text eine Zeile so
+beginnt. Wurde eine Notiz nach dem Commit des Tokens noch einmal geändert, hält `git revert` mit
+einem Konflikt für diese Notiz an. Löse ihn und führe dann `git revert --continue` aus.
 
 ## Netz-Regeln
 
@@ -219,9 +282,11 @@ Die Token-Prüfung ist eine Schicht, das Netz sollte die zweite sein:
 - **Den ganzen Vault schreiben heißt Sperrliste.** Mit `writeDir: "/"` ist ein neuer Ordner
   beschreibbar, bis du ihn einträgst. Die Namensregeln halten Agent-Konfiguration fern
   (Punkt-Ordner, `claude*`, `agents*`, ...), aber nicht Notizen, die Menschen oder Agents auf
-  anderen Geräten als Regeln *behandeln* (eine Notiz „Hausregeln“, das Entscheidungs-Log eines
-  Projekts). Die gehören in `writeDeny`. Vorhandene Notizen, die der Token bearbeitet, bekommen sein
-  `frontmatter` und seine `tags`. So siehst du hinterher, was er angefasst hat.
+  anderen Geräten als Regeln *behandeln* (ein Ordner „Hausregeln“, das Entscheidungs-Log eines
+  Projekts). „Nur eigene Notizen“ lässt deine vorhandenen Notizen, wie sie sind, aber eine neue
+  Notiz kann trotzdem in so einem Ordner landen. Solche Ordner gehören in `writeDeny` (siehe
+  [Was sperren](#was-sperren)). Jede Notiz, die der Token schreibt, bekommt sein `frontmatter` und
+  seine `tags`. So siehst du hinterher, welche Notizen seine eigenen sind.
 - **Nur einfache neue Namen.** Ordner und Notizen, die ein eingeschränkter Token anlegt, bestehen nur
   aus Kleinbuchstaben (ASCII), Ziffern und `-`: keine Leerzeichen, keine Großbuchstaben, keine
   Umlaute. Vorhandene Namen bleiben, wie sie sind.
