@@ -1,5 +1,5 @@
 import { JAVASCRIPT_FRONTMATTER_ERROR, parseFrontmatter, stringifyFrontmatter } from "../vault/frontmatter.js";
-import { MAX_OUTPUT_BYTES, MAX_OUTPUT_NODES, exceedsOutputBudget, reusesValues } from "./budget.js";
+import { DUMP_BUDGET, MAX_DUMP_VALUES, MAX_OUTPUT_BYTES, exceedsOutputBudget, reusesValues } from "./budget.js";
 import { ScopedDenied } from "./guard.js";
 
 /**
@@ -38,19 +38,27 @@ export function enforceFrontmatter(
   return stringifyFrontmatter(content, next);
 }
 
+const dumpLimits = `more than ${MAX_DUMP_VALUES} values or about ${MAX_OUTPUT_BYTES / 1024 / 1024} MB once written out`;
+
 /**
- * Refuses front matter that would be too large to write back or to print: more than the output
- * budget (about 2 MB as JSON, or 100 000 values). Measured on the parsed values, so a text anchor
- * reused thousands of times (`b: [*x, *x, ...]`, which the alias check above lets pass because it
- * only looks at lists and mappings) counts with its full length every time.
+ * Refuses front matter that would be too costly to write back or to print: more than the dump
+ * budget (10 000 values, about 2 MB). Measured on the parsed values, so a text anchor reused
+ * thousands of times (`b: [*x, *x, ...]`, which the alias check above lets pass because it only
+ * looks at lists and mappings) counts with its full length every time, and so does every list.
  */
 export function checkFrontmatterSize(data: Record<string, unknown>): void {
-  if (exceedsOutputBudget(data)) {
+  if (exceedsOutputBudget(data, DUMP_BUDGET)) {
     throw new ScopedDenied(
       "yaml-too-large",
-      `Front matter too large for this token (more than about ${MAX_OUTPUT_BYTES / 1024 / 1024} MB or ` +
-        `${MAX_OUTPUT_NODES} values once written out; a YAML alias counts every time it is used)`,
+      `Front matter too large for this token (${dumpLimits}; a YAML alias counts every time it is used)`,
     );
+  }
+}
+
+/** Refuses a value a patch would put into the front matter when it is over the dump budget. */
+export function checkFrontmatterValue(value: unknown): void {
+  if (exceedsOutputBudget(value, DUMP_BUDGET)) {
+    throw new ScopedDenied("value-too-large", `Front matter value too large for this token (${dumpLimits})`);
   }
 }
 

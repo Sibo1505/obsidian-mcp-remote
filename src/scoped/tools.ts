@@ -4,7 +4,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { Config } from "../config.js";
 import { vaultReadSchema, vaultRead } from "../tools/vault-read.js";
 import { vaultWriteSchema } from "../tools/vault-write.js";
-import { vaultPatchSchema, applyPatch } from "../tools/vault-patch.js";
+import { vaultPatchSchema, applyPatch, parseContentValue } from "../tools/vault-patch.js";
 import { vaultListSchema } from "../tools/vault-list.js";
 import { searchQuerySchema } from "../tools/search-query.js";
 import { hasBlockedSegment, listDir, resolveInVault, statNote } from "../vault/fs.js";
@@ -19,7 +19,7 @@ import {
   MAX_SEGMENT_LENGTH,
   toSafeStem,
 } from "./names.js";
-import { checkFrontmatterSize, enforceFrontmatter, type WriteBudget } from "./enforce.js";
+import { checkFrontmatterSize, checkFrontmatterValue, enforceFrontmatter, type WriteBudget } from "./enforce.js";
 import { parseFrontmatter } from "../vault/frontmatter.js";
 import { MAX_OUTPUT_BYTES, exceedsOutputBudget } from "./budget.js";
 import type { ScopedSearch } from "./search-runner.js";
@@ -218,6 +218,8 @@ export function registerScopedTools(server: McpServer, ctx: ScopedToolContext): 
         // Patching writes the note's front matter back out, so check its size before that happens:
         // the note may come from another writer.
         checkFrontmatterSize(parseFrontmatter(current, input.path).data);
+        // A front matter patch writes its value out too: same budget, checked before that happens.
+        if (input.targetType === "frontmatter") checkFrontmatterValue(parseContentValue(input));
         const patched = applyPatch(current, input);
         checkNoteSize(patched);
         const output = enforce(ctx, patched, input.path);

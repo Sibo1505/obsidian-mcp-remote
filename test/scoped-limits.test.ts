@@ -270,6 +270,62 @@ test("a scoped write attempt counts against writesPerHour once its path and size
   });
 });
 
+// --- many lists and mappings: js-yaml's dump is quadratic in their number ---
+
+test("scoped vault_patch refuses a front matter value with too many values before writing it out", async () => {
+  await withScopedServer([makeScopedToken()], async ({ baseUrl, vaultRoot, logs }) => {
+    await plant(vaultRoot, `${WRITE_DIR}/p.md`, "# p\n");
+    // 340 000 empty lists: 996 KB of JSON, under the body limit.
+    const value = `[${Array(340_000).fill("[]").join(",")}]`;
+    const { value: result, maxBlockMs } = await measureBlock(() =>
+      callTool(baseUrl, "vault_patch", {
+        path: `${WRITE_DIR}/p.md`,
+        targetType: "frontmatter",
+        target: "x",
+        operation: "replace",
+        contentType: "application/json",
+        content: value,
+        createTargetIfMissing: true,
+        trimTargetWhitespace: false,
+        rejectIfContentPreexists: false,
+        targetScope: "content",
+        targetDelimiter: "::",
+      }),
+    );
+    assert.equal(result.isError, true, result.text.slice(0, 200));
+    assert.match(result.text, /^Front matter value too large/);
+    assert.ok(maxBlockMs < MAX_BLOCK_MS, `event loop blocked ${maxBlockMs} ms`);
+    assert.ok(logs.includes(`scoped token=test-agent tool=vault_patch path="${WRITE_DIR}/p.md" result=denied:value-too-large`));
+  });
+});
+
+test("scoped vault_write refuses front matter with too many lists to write out, without blocking the server", async () => {
+  // 66 000 empty lists: 193 KB, under the note size limit.
+  const content = `---\nx: [${Array(66_000).fill("[]").join(",")}]\n---\nbody\n`;
+  for (const token of [makeScopedToken(), makeScopedToken({ frontmatter: {}, tags: [] })]) {
+    await withScopedServer([token], async ({ baseUrl, vaultRoot }) => {
+      const { value: result, maxBlockMs } = await measureBlock(() =>
+        callTool(baseUrl, "vault_write", { path: `${WRITE_DIR}/w.md`, content }),
+      );
+      assert.equal(result.isError, true, result.text.slice(0, 200));
+      assert.match(result.text, /^Front matter too large/);
+      assert.ok(maxBlockMs < MAX_BLOCK_MS, `event loop blocked ${maxBlockMs} ms`);
+      await assert.rejects(() => stat(path.join(vaultRoot, WRITE_DIR, "w.md")));
+    });
+  }
+});
+
+test("scoped writes still accept ordinary front matter with a few thousand values", async () => {
+  await withScopedServer([makeScopedToken()], async ({ baseUrl }) => {
+    const tags = Array.from({ length: 3000 }, (_, i) => `tag-${i}`);
+    const result = await callTool(baseUrl, "vault_write", {
+      path: `${WRITE_DIR}/many-tags.md`,
+      content: `---\ntags: [${tags.join(", ")}]\nnested: {a: [1, 2, {b: 3}]}\n---\nbody\n`,
+    });
+    assert.equal(result.isError, false, result.text);
+  });
+});
+
 // --- total path length (Windows stops a pull at paths over 260 characters, vault folder included) ---
 
 test("scoped vault_write: a path of at most 170 characters is accepted, a longer one is refused", async () => {
