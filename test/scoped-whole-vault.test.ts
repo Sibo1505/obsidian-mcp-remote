@@ -34,7 +34,7 @@ const SEED: Record<string, string> = {
   "Home.md": "# Home\n",
   "Projects/plan.md": "---\ntags: [project]\n---\n# Plan\n\n## Status\nalt\n",
   "My Notes/Eine Notiz.md": "# Eine Notiz\n",
-  "resources/claude-config/skills/demo/SKILL.md": "# skill\n",
+  "resources/claude-skills/skills/demo/SKILL.md": "# skill\n",
   "areas/claude/context.md": "# context\n",
   "resources/rules/access-rules.md": "# rules\n",
   "Private/secret.md": "# secret\n",
@@ -82,9 +82,9 @@ async function withWholeVault(fn: (ctx: ScopedTestContext) => Promise<void>, tok
 // --- rejected: the vault stays exactly as it was ---
 
 const rejectedWrites: [path: string, code: string][] = [
-  // Agent configuration: "claude-config" and "claude" are agent instruction names, without any writeDeny entry.
-  ["resources/claude-config/skills/demo/SKILL.md", "bad-name"],
-  ["resources/claude-config/new-note.md", "bad-name"],
+  // Agent configuration: "claude-skills" and "claude" are agent instruction names, without any writeDeny entry.
+  ["resources/claude-skills/skills/demo/SKILL.md", "bad-name"],
+  ["resources/claude-skills/new-note.md", "bad-name"],
   ["areas/claude/context.md", "bad-name"],
   [".claude/settings.json", "bad-name"],
   [".claude/notes.md", "bad-name"],
@@ -141,7 +141,7 @@ for (const [rejectedPath, code] of rejectedWrites) {
 }
 
 for (const [rejectedPath, code] of [
-  ["resources/claude-config/skills/demo/SKILL.md", "bad-name"],
+  ["resources/claude-skills/skills/demo/SKILL.md", "bad-name"],
   ["areas/claude/context.md", "bad-name"],
   ["resources/rules/access-rules.md", "write-denied"],
   ["Private/secret.md", "write-denied"],
