@@ -17,8 +17,9 @@ function logGitError(step: string, error: unknown): void {
 // host-side cron auto-pull was removed in favor of this module owning the checkout exclusively —
 // a mutex here does nothing against a second, external process also running `git pull` (see
 // obsidian-mcp-remote project notes: that combination caused .git/index.lock races).
+// Not reentrant: code running under the lock must call commitAndPushLocked, never commitAndPush.
 let gitQueue: Promise<void> = Promise.resolve();
-function withGitLock<T>(fn: () => Promise<T>): Promise<T> {
+export function withGitLock<T>(fn: () => Promise<T>): Promise<T> {
   const result = gitQueue.then(fn, fn);
   gitQueue = result.then(
     () => undefined,
@@ -129,56 +130,67 @@ export async function commitAndPush(
   message: string,
   options: CommitOptions = {},
 ): Promise<SyncResult> {
-  return withGitLock(async () => {
-    try {
-      await git(vaultRoot, ["add", "--", relativePath]);
-      if (!(await hasStagedChanges(vaultRoot))) {
-        return { synced: true };
-      }
-      await git(vaultRoot, ["commit", "-m", message]);
-    } catch (error) {
-      logGitError("add/commit", error);
+  return withGitLock(() => commitAndPushLocked(vaultRoot, relativePath, message, options));
+}
+
+/**
+ * commitAndPush for a caller that already holds the git lock (withGitLock), so that its own checks
+ * and the file write happen under the same lock as the commit: no pull can land in between.
+ */
+export async function commitAndPushLocked(
+  vaultRoot: string,
+  relativePath: string,
+  message: string,
+  options: CommitOptions = {},
+): Promise<SyncResult> {
+  try {
+    await git(vaultRoot, ["add", "--", relativePath]);
+    if (!(await hasStagedChanges(vaultRoot))) {
+      return { synced: true };
+    }
+    await git(vaultRoot, ["commit", "-m", message]);
+  } catch (error) {
+    logGitError("add/commit", error);
+    return { synced: false };
+  }
+
+  try {
+    await git(vaultRoot, ["pull", "--rebase"]);
+  } catch (error) {
+    logGitError("pull --rebase", error);
+
+    if (!(await isRebaseInProgress(vaultRoot))) {
+      // Failed before a rebase ever started (network/TLS/auth) - nothing to abort or
+      // quarantine. Our commit is safe on disk, just not pushed yet; the next write's own
+      // pull --rebase step will retry.
       return { synced: false };
     }
 
     try {
-      await git(vaultRoot, ["pull", "--rebase"]);
-    } catch (error) {
-      logGitError("pull --rebase", error);
-
-      if (!(await isRebaseInProgress(vaultRoot))) {
-        // Failed before a rebase ever started (network/TLS/auth) - nothing to abort or
-        // quarantine. Our commit is safe on disk, just not pushed yet; the next write's own
-        // pull --rebase step will retry.
-        return { synced: false };
-      }
-
-      try {
-        await git(vaultRoot, ["rebase", "--abort"]);
-        const ourContent = await readFile(path.join(vaultRoot, relativePath), "utf-8");
-        const branch = await currentBranch(vaultRoot);
-        await git(vaultRoot, ["reset", "--hard", `origin/${branch}`]);
-        const conflictPath = options.quarantine
-          ? await options.quarantine(relativePath, ourContent)
-          : await quarantineConflict(vaultRoot, relativePath, ourContent);
-        await git(vaultRoot, ["add", "--", conflictPath]);
-        const conflictMessage = options.conflictMessage?.(relativePath) ?? `conflict: quarantined ${relativePath}`;
-        await git(vaultRoot, ["commit", "-m", conflictMessage]);
-        await git(vaultRoot, ["push"]);
-        return { synced: false, conflict: true, conflictPath };
-      } catch (recoveryError) {
-        logGitError("conflict recovery", recoveryError);
-        return { synced: false, conflict: true };
-      }
-    }
-
-    try {
+      await git(vaultRoot, ["rebase", "--abort"]);
+      const ourContent = await readFile(path.join(vaultRoot, relativePath), "utf-8");
+      const branch = await currentBranch(vaultRoot);
+      await git(vaultRoot, ["reset", "--hard", `origin/${branch}`]);
+      const conflictPath = options.quarantine
+        ? await options.quarantine(relativePath, ourContent)
+        : await quarantineConflict(vaultRoot, relativePath, ourContent);
+      await git(vaultRoot, ["add", "--", conflictPath]);
+      const conflictMessage = options.conflictMessage?.(relativePath) ?? `conflict: quarantined ${relativePath}`;
+      await git(vaultRoot, ["commit", "-m", conflictMessage]);
       await git(vaultRoot, ["push"]);
-    } catch (error) {
-      logGitError("push", error);
-      return { synced: false };
+      return { synced: false, conflict: true, conflictPath };
+    } catch (recoveryError) {
+      logGitError("conflict recovery", recoveryError);
+      return { synced: false, conflict: true };
     }
+  }
 
-    return { synced: true };
-  });
+  try {
+    await git(vaultRoot, ["push"]);
+  } catch (error) {
+    logGitError("push", error);
+    return { synced: false };
+  }
+
+  return { synced: true };
 }
