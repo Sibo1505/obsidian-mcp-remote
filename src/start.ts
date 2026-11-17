@@ -4,6 +4,7 @@ import type { Config } from "./config.js";
 import { createApp } from "./app.js";
 import { loadScopedConfig } from "./scoped/config.js";
 import { createScopedApp } from "./scoped/app.js";
+import { unmatchedDenyEntries } from "./scoped/guard.js";
 
 export interface Logger {
   info(line: string): void;
@@ -60,6 +61,17 @@ export async function startServers(config: Config, env: NodeJS.ProcessEnv, log: 
   for (const token of setup.tokens) {
     if (token.expiresAt.getTime() <= now) {
       log.error(`Scoped token "${token.name}" expired at ${token.expiresAt.toISOString()}: its requests get 401`);
+    }
+    // A deny entry with a typo protects nothing, silently. Say so here, in the server log only: the
+    // tool descriptions and answers never name deny entries.
+    const lists: [field: string, entries: string[]][] = [
+      ["readDeny", token.readDeny],
+      ["writeDeny", token.writeDeny.filter((entry) => !token.readDeny.includes(entry))],
+    ];
+    for (const [field, entries] of lists) {
+      for (const entry of await unmatchedDenyEntries(config.VAULT_PATH, entries)) {
+        log.error(`Scoped token "${token.name}": ${field} entry ${JSON.stringify(entry)} matches nothing in the vault (a typo?)`);
+      }
     }
   }
 

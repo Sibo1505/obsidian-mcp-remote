@@ -240,6 +240,37 @@ export function isReadDenied(denyList: string[], relativePath: string): boolean 
   });
 }
 
+/**
+ * The entries of a deny list that match nothing in the vault right now: neither the path nor its
+ * namesake exists, compared like isReadDenied (without regard to case and Unicode form). Such an
+ * entry is most likely a typo and protects nothing. Returns nothing when the vault cannot be read.
+ */
+export async function unmatchedDenyEntries(vaultRoot: string, entries: string[]): Promise<string[]> {
+  const entriesOf = async (folder: string) => {
+    try {
+      return await readdir(folder);
+    } catch {
+      return undefined;
+    }
+  };
+  if ((await entriesOf(vaultRoot)) === undefined) return [];
+  const exists = async (relative: string) => {
+    let current = vaultRoot;
+    for (const part of relative.split("/")) {
+      const found = (await entriesOf(current))?.find((name) => fold(name) === fold(part));
+      if (found === undefined) return false;
+      current = path.join(current, found);
+    }
+    return true;
+  };
+  const unmatched: string[] = [];
+  for (const entry of entries) {
+    const stem = fold(entry).endsWith(".md") ? entry.slice(0, -".md".length) : entry;
+    if (!(await exists(entry)) && !(await exists(stem)) && !(await exists(`${stem}.md`))) unmatched.push(entry);
+  }
+  return unmatched;
+}
+
 const toPosix = (relative: string) => relative.split(path.sep).join("/");
 
 /**
