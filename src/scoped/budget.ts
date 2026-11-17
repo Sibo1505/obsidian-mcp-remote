@@ -17,6 +17,16 @@ export interface OutputBudget {
 
 export const OUTPUT_BUDGET: OutputBudget = { maxNodes: MAX_OUTPUT_NODES, maxBytes: MAX_OUTPUT_BYTES };
 
+/**
+ * Most values in front matter that a scoped request makes the server write out as YAML. js-yaml's
+ * dump looks up every list and mapping in a list of all earlier ones, so its time grows with the
+ * square of their number (340 000 empty lists: 17 s). Ordinary front matter has well under 1 000
+ * values; 10 000 take about 20 ms.
+ */
+export const MAX_DUMP_VALUES = 10_000;
+
+export const DUMP_BUDGET: OutputBudget = { maxNodes: MAX_DUMP_VALUES, maxBytes: MAX_OUTPUT_BYTES };
+
 /** UTF-8 bytes of `text` written as a JSON string: quotes and escapes included. */
 function jsonStringBytes(text: string): number {
   let extra = 2;
