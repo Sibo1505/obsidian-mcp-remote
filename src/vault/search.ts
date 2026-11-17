@@ -202,10 +202,11 @@ export async function runJsonLogicQuery(
   limits?: SearchLimits,
 ): Promise<SearchQueryResult[]> {
   if (limits) checkQueryShape(query, limits);
+  // With limits, the time budget also covers reading and parsing the notes.
+  const deadline = limits ? Date.now() + limits.timeBudgetMs : Number.POSITIVE_INFINITY;
   const index = await buildVaultIndex(vaultRoot, include);
   const results: SearchQueryResult[] = [];
   let resultBytes = 2;
-  const deadline = limits ? Date.now() + limits.timeBudgetMs : Number.POSITIVE_INFINITY;
   activeLimits = limits;
   try {
     for (const note of index) {

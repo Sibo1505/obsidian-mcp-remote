@@ -5,7 +5,7 @@ import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import type { Config } from "../src/config.js";
 import type { ScopedToken } from "../src/scoped/config.js";
-import { createScopedApp } from "../src/scoped/app.js";
+import { createScopedApp, type ScopedAppOptions } from "../src/scoped/app.js";
 import { makeTestConfig } from "./helpers.js";
 
 // Test-only secrets: long enough for the 32-character minimum, obviously not real.
@@ -41,13 +41,13 @@ export interface ScopedTestContext {
 export async function withScopedServer(
   tokens: ScopedToken[],
   fn: (ctx: ScopedTestContext) => Promise<void>,
-  options: { vaultRoot?: string } = {},
+  options: { vaultRoot?: string; app?: Omit<ScopedAppOptions, "log"> } = {},
 ) {
   const ownVault = options.vaultRoot === undefined;
   const vaultRoot = options.vaultRoot ?? (await mkdtemp(path.join(tmpdir(), "scoped-vault-")));
   const config = makeTestConfig(vaultRoot);
   const logs: string[] = [];
-  const app = createScopedApp(config, tokens, { log: (line) => logs.push(line) });
+  const app = createScopedApp(config, tokens, { ...options.app, log: (line) => logs.push(line) });
   const server: Server = app.listen(0);
   await new Promise((resolve) => server.once("listening", resolve));
   const port = (server.address() as AddressInfo).port;
