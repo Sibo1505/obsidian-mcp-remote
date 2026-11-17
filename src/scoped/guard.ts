@@ -222,16 +222,21 @@ export async function readFileNoFollow(target: string): Promise<string> {
 const fold = (value: string) => value.normalize("NFC").toLowerCase();
 
 /**
- * True when a vault-relative path ("/"-separated) equals a readDeny entry or lies below one.
- * Compared case-insensitively and Unicode-normalized, because the vault is also synced to
- * file systems where "Private/x.md" and "private/x.md" are the same file.
+ * True when a vault-relative path ("/"-separated) is covered by an entry of a deny list (readDeny
+ * or writeDeny): it equals the entry or lies below it, and the same for the entry's namesake. In a
+ * vault a note "x.md" and a folder "x/" belong together (a hub and its parts), so an entry "x.md"
+ * also covers "x/" and everything below, and an entry "x" also covers "x.md". Compared
+ * case-insensitively and Unicode-normalized, because the vault is also synced to file systems
+ * where "Private/x.md" and "private/x.md" are the same file.
  */
-export function isReadDenied(readDeny: string[], relativePath: string): boolean {
-  if (readDeny.length === 0) return false;
+export function isReadDenied(denyList: string[], relativePath: string): boolean {
+  if (denyList.length === 0) return false;
   const candidate = fold(relativePath);
-  return readDeny.some((entry) => {
-    const prefix = fold(entry);
-    return candidate === prefix || candidate.startsWith(`${prefix}/`);
+  const covers = (prefix: string) => candidate === prefix || candidate.startsWith(`${prefix}/`);
+  return denyList.some((entry) => {
+    const folded = fold(entry);
+    const stem = folded.endsWith(".md") ? folded.slice(0, -".md".length) : folded;
+    return covers(folded) || covers(stem) || covers(`${stem}.md`);
   });
 }
 

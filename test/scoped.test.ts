@@ -857,6 +857,54 @@ test("scoped reads do not follow a symlink that leads out of the vault", async (
   });
 });
 
+// --- deny entries cover their namesakes ---
+
+test("a deny entry also covers its namesake: x.md denies the folder x/, and x denies the note x.md", async () => {
+  const readDeny = ["private/contract.md", "archive/plan"];
+  const token = makeScopedToken({
+    writeDir: "",
+    writeDeny: ["projects/roadmap.md", "resources/ops", ...readDeny],
+    readDeny,
+  });
+  await withScopedServer([token], async ({ baseUrl, vaultRoot }) => {
+    const seed: Record<string, string> = {
+      "private/contract/notes.md": "notes",
+      "archive/plan.md": "plan",
+      "archive/plan/sub.md": "sub",
+      "archive/planning.md": "planning",
+    };
+    for (const [relative, content] of Object.entries(seed)) {
+      await mkdir(path.dirname(path.join(vaultRoot, relative)), { recursive: true });
+      await writeFile(path.join(vaultRoot, relative), content);
+    }
+
+    for (const denied of [
+      "projects/roadmap/roadmap-adr-012.md",
+      "resources/ops.md",
+      "private/contract/new.md",
+      "archive/plan.md",
+    ]) {
+      const result = await callTool(baseUrl, "vault_write", { path: denied, content: "x" });
+      assert.equal(result.isError, true, denied);
+      assert.match(result.text, /not writable with this token/, denied);
+    }
+    for (const denied of ["private/contract/notes.md", "archive/plan.md", "archive/plan/sub.md"]) {
+      const result = await callTool(baseUrl, "vault_read", { path: denied });
+      assert.equal(result.isError, true, denied);
+      assert.match(result.text, /Not readable with this token/, denied);
+    }
+    assert.deepEqual(JSON.parse((await callTool(baseUrl, "vault_list", { path: "archive" })).text), ["planning.md"]);
+    const found = JSON.parse((await callTool(baseUrl, "search_query", { query: { "==": [1, 1] } })).text) as {
+      filename: string;
+    }[];
+    assert.deepEqual(found.map((r) => r.filename), ["archive/planning.md"]);
+
+    // Names that only start the same way stay open.
+    assert.equal((await callTool(baseUrl, "vault_write", { path: "resources/ops-notes.md", content: "x" })).isError, false);
+    assert.equal((await callTool(baseUrl, "vault_read", { path: "archive/planning.md" })).isError, false);
+  });
+});
+
 // --- audit log ---
 
 test("every scoped tool call writes one audit line with token, tool, path and result, never content or token", async () => {

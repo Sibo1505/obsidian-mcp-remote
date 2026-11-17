@@ -216,6 +216,11 @@ const invalidCases: { name: string; env: NodeJS.ProcessEnv; field: string }[] = 
     field: `${T}.readDeny[0]: overlaps writeDir`,
   },
   {
+    name: "readDeny names the namesake note of writeDir (x.md covers x/)",
+    env: envWith([tokenEntry({ readDeny: ["notes-inbox.md"] })]),
+    field: `${T}.readDeny[0]: overlaps writeDir`,
+  },
+  {
     name: "readDeny lies inside writeDir",
     env: envWith([tokenEntry({ readDeny: ["notes-inbox/private"] })]),
     field: `${T}.readDeny[0]: overlaps writeDir`,
