@@ -87,10 +87,12 @@ Eingeschränkte Tokens nutzen einen **eigenen Listener auf einem eigenen Port**.
     liegen;
   - höchstens 200 KB (UTF-8) pro Notiz, bei `vault_patch` für das Ergebnis;
   - kein Frontmatter, das eine Liste oder ein Mapping über einen YAML-Alias (`*name`) wiederverwendet,
-    und keines, das ausgeschrieben größer wäre als die Obergrenze für Ergebnisse oben (ein langer
-    Text, der über einen Alias wiederverwendet wird, zählt jedes Mal voll): Ein paar hundert Byte
-    Aliase können für jeden späteren Leser Milliarden Werte bedeuten. `vault_patch` prüft das
-    Frontmatter der vorhandenen Notiz genauso, bevor es sie ändert;
+    und keines mit mehr als 10 000 Werten oder etwa 2 MB, wenn es ausgeschrieben wird (ein langer
+    Text, der über einen Alias wiederverwendet wird, zählt jedes Mal voll, ebenso jede Liste und
+    jedes Mapping): Ein paar hundert Byte Aliase können für jeden späteren Leser Milliarden Werte
+    bedeuten, und das Schreiben von YAML dauert mit dem Quadrat der Zahl der Listen und Mappings.
+    `vault_patch` prüft das Frontmatter der vorhandenen Notiz und bei einem Frontmatter-Patch den
+    neuen Wert genauso, bevor es die Notiz ändert;
   - höchstens `writesPerHour` Schreibversuche pro Token (gleitende Stunde). Ein `vault_write` zählt,
     sobald der Pfad die Prüfungen am Text besteht (Schreibordner, Sperrlisten, die Namen aller
     Teile, Länge) und die Notiz die Größengrenze; ein `vault_patch` zählt, sobald die Notiz gefunden

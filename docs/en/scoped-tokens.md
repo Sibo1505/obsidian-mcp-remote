@@ -74,11 +74,12 @@ Scoped tokens use their **own listener on their own port**. The main listener (`
     a symlink or have other hard links. The resolved folder must lie inside
     `realpath(vault/writeDir)`;
   - at most 200 KB (UTF-8) per note; for `vault_patch` this is checked on the result;
-  - no front matter that reuses a list or mapping through a YAML alias (`*name`), and none that
-    would be larger than the result ceiling above once written out (one long text reused through
-    an alias counts in full every time): a few hundred bytes of aliases can stand for billions of
-    values for every later reader. `vault_patch` checks the existing note's front matter the same
-    way before it patches it;
+  - no front matter that reuses a list or mapping through a YAML alias (`*name`), and none with
+    more than 10 000 values or about 2 MB once written out (one long text reused through an alias
+    counts in full every time, and so does every list and mapping): a few hundred bytes of aliases
+    can stand for billions of values for every later reader, and writing YAML takes time that grows
+    with the square of the number of lists and mappings. `vault_patch` checks the existing note's
+    front matter and, for a front matter patch, the new value the same way before it patches;
   - at most `writesPerHour` write attempts per token (sliding hour). A `vault_write` counts once
     its path passes the checks on the text (write folder, deny lists, the names of every part,
     length) and the note passes the size limit; a `vault_patch` counts once the note is found and
