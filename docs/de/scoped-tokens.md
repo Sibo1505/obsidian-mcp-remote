@@ -83,9 +83,13 @@ Eingeschränkte Tokens nutzen einen **eigenen Listener auf einem eigenen Port**.
     und keine weiteren Hardlinks haben. Der aufgelöste Ordner muss in `realpath(vault/writeDir)`
     liegen;
   - höchstens 200 KB (UTF-8) pro Notiz, bei `vault_patch` für das Ergebnis;
-  - kein Frontmatter, das eine Liste oder ein Mapping über einen YAML-Alias (`*name`) wiederverwendet:
-    Ein paar hundert Byte Aliase können für jeden späteren Leser Milliarden Werte bedeuten;
-  - höchstens `writesPerHour` Schreibvorgänge pro Token (gleitende Stunde).
+  - kein Frontmatter, das eine Liste oder ein Mapping über einen YAML-Alias (`*name`) wiederverwendet,
+    und keines, das ausgeschrieben größer wäre als die Obergrenze für Ergebnisse oben (ein langer
+    Text, der über einen Alias wiederverwendet wird, zählt jedes Mal voll): Ein paar hundert Byte
+    Aliase können für jeden späteren Leser Milliarden Werte bedeuten. `vault_patch` prüft das
+    Frontmatter der vorhandenen Notiz genauso, bevor es sie ändert;
+  - höchstens `writesPerHour` Schreibversuche pro Token (gleitende Stunde). Ein Versuch zählt, sobald
+    Pfad und Größe passen, auch wenn danach das Frontmatter oder der Patch abgelehnt wird.
 - **Markierte Notizen.** Nach jedem eingeschränkten Schreiben setzt der Server die
   `frontmatter`-Felder des Tokens und ergänzt seine `tags` in der fertigen Notiz, auch wenn ein
   Schreiben oder Patch sie entfernen wollte.
@@ -135,7 +139,7 @@ wegfallen lässt):
 | `writeDeny` | nein | Pfad-Präfixe (Ordner oder Dateien), die der Token nicht schreiben darf, wie bei `readDeny`. Standard: leer. Vor allem für `writeDir: "/"`: Trag ein, was die Geräte des Vaults als Regeln oder Konfiguration behandeln. Die Werkzeug-Beschreibungen nennen diese Einträge nie; ein gesperrtes Schreiben sagt es erst, wenn es passiert. |
 | `readDeny` | nein | Pfad-Präfixe (Ordner oder Dateien), die der Token nicht lesen darf: Ein Eintrag gilt für sich selbst, alles darunter und seinen Namensvetter (`x.md` und `x/`), ohne Groß-/Kleinschreibung. Standard: leer, also ist alles lesbar. Jeder Eintrag ist auch für das Schreiben gesperrt. Mit einem Schreibordner ist ein Eintrag, der sich mit `writeDir` überschneidet (ihn abdeckt, in ihm liegt oder darüber liegt), ein Fehler. |
 | `expiresAt` | ja | ISO-Datum (`2026-12-31`, gemeint ist 00:00 UTC) oder Datum mit Uhrzeit und Zeitzone (`2026-12-31T23:59:00Z`). Danach: 401 und eine Log-Zeile. |
-| `writesPerHour` | nein | Standard 60. |
+| `writesPerHour` | nein | Standard 60. Zählt Versuche, deren Pfad und Größe passen (siehe oben). |
 | `frontmatter` | nein | Felder, die der Server in jeder Notiz dieses Tokens setzt (Text, Zahl, Ja/Nein; nicht `tags`). |
 | `tags` | nein | Tags, die der Server in jeder Notiz dieses Tokens ergänzt. |
 

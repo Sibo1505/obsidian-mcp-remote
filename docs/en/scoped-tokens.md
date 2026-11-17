@@ -72,9 +72,13 @@ Scoped tokens use their **own listener on their own port**. The main listener (`
     a symlink or have other hard links. The resolved folder must lie inside
     `realpath(vault/writeDir)`;
   - at most 200 KB (UTF-8) per note; for `vault_patch` this is checked on the result;
-  - no front matter that reuses a list or mapping through a YAML alias (`*name`): a few hundred
-    bytes of aliases can stand for billions of values for every later reader;
-  - at most `writesPerHour` writes per token (sliding hour).
+  - no front matter that reuses a list or mapping through a YAML alias (`*name`), and none that
+    would be larger than the result ceiling above once written out (one long text reused through
+    an alias counts in full every time): a few hundred bytes of aliases can stand for billions of
+    values for every later reader. `vault_patch` checks the existing note's front matter the same
+    way before it patches it;
+  - at most `writesPerHour` write attempts per token (sliding hour). An attempt counts once its
+    path and size pass, also when its front matter or the patch is refused afterwards.
 - **Marked notes.** After every scoped write, the server sets the token's `frontmatter` fields and
   adds its `tags` in the final note, even when a write or patch tried to remove them.
 - **Conflicts.** If someone else changed the same note at the same time, the server keeps the
@@ -122,7 +126,7 @@ Fields per token (unknown fields are an error, so a typo cannot silently drop a 
 | `writeDeny` | no | Path prefixes (folders or files) the token cannot write, like `readDeny`. Default: empty. Mainly for `writeDir: "/"`: list what the vault's devices treat as rules or configuration. The tool descriptions never list these entries; a denied write says so when it happens. |
 | `readDeny` | no | Path prefixes (folders or files) the token cannot read: an entry covers itself, everything below it and its namesake (`x.md` and `x/`), compared without regard to case. Default: empty, so everything is readable. Every entry is write-denied as well. With one write folder, an entry that overlaps `writeDir` (covers it, lies inside it, or is its parent) is an error. |
 | `expiresAt` | yes | ISO date (`2026-12-31`, meaning 00:00 UTC) or date-time with offset (`2026-12-31T23:59:00Z`). After that: 401 and a log line. |
-| `writesPerHour` | no | Default 60. |
+| `writesPerHour` | no | Default 60. Counts attempts that pass the path and size checks (see above). |
 | `frontmatter` | no | Fields the server sets on every note it writes for this token (strings, numbers, booleans; not `tags`). |
 | `tags` | no | Tags the server adds to every note it writes for this token. |
 
