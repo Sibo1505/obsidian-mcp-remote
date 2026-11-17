@@ -12,6 +12,7 @@ import { vaultPatch } from "../src/tools/vault-patch.js";
 import { vaultList } from "../src/tools/vault-list.js";
 import { searchQuery } from "../src/tools/search-query.js";
 import { writeNote } from "../src/vault/fs.js";
+import { parseHeadingLine } from "../src/tools/heading.js";
 import { withTempVault } from "./helpers.js";
 
 // --- vault_write ---
@@ -416,6 +417,73 @@ test("vaultPatch with targetType block is explicitly rejected", async () => {
         }),
       /not supported/,
     );
+  });
+});
+
+// --- heading lines: same matches, linear time ---
+
+/** Small seeded generator, so random cases are the same on every run. */
+function seededRandom(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+test("heading lines are recognized exactly as by /^(#{1,6})\\s+(.*)$/ (level and trimmed text)", () => {
+  // The rule the server has always used, as the reference.
+  const reference = (line: string) => {
+    const match = /^(#{1,6})\s+(.*)$/.exec(line);
+    return match ? { level: match[1].length, text: match[2].trim() } : undefined;
+  };
+  const alphabet = ["#", " ", "\t", "\r", " ", " ", "　", "a", "b", "-"];
+  const random = seededRandom(20261117);
+  const pick = (n: number) => Math.floor(random() * n);
+  let headings = 0;
+  for (let i = 0; i < 100_000; i++) {
+    let line = "#".repeat(1 + pick(7));
+    for (let j = 0, length = 1 + pick(12); j < length; j++) line += alphabet[pick(alphabet.length)];
+    const expected = reference(line);
+    if (expected) headings++;
+    assert.deepEqual(parseHeadingLine(line), expected, JSON.stringify(line));
+  }
+  assert.ok(headings > 10_000, `only ${headings} of the random lines were headings`);
+});
+
+test("a heading line with 200 000 spaces before a line break is handled in linear time (read and patch)", async () => {
+  await withTempVault(async (vaultRoot) => {
+    // "\r" cannot be matched by "." in the heading text, so the line is no heading; a backtracking
+    // rule would try every split of the spaces first (quadratic).
+    await writeNote(vaultRoot, "spaces.md", `# ${" ".repeat(200_000)}a\rb\n`);
+    let started = Date.now();
+    await assert.rejects(
+      () => vaultRead(vaultRoot, { path: "spaces.md", targetType: "heading", target: "x", targetDelimiter: "::" }),
+      /Heading not found/,
+    );
+    assert.ok(Date.now() - started < 1000, `read took ${Date.now() - started} ms`);
+    started = Date.now();
+    await assert.rejects(
+      () =>
+        vaultPatch(vaultRoot, {
+          path: "spaces.md",
+          operation: "append",
+          targetType: "heading",
+          target: "x",
+          content: "more",
+          contentType: "text/markdown",
+          createTargetIfMissing: false,
+          trimTargetWhitespace: false,
+          rejectIfContentPreexists: false,
+          targetScope: "content",
+          targetDelimiter: "::",
+        }),
+      /Heading not found/,
+    );
+    assert.ok(Date.now() - started < 1000, `patch took ${Date.now() - started} ms`);
   });
 });
 
