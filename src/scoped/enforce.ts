@@ -1,12 +1,13 @@
 import { JAVASCRIPT_FRONTMATTER_ERROR, parseFrontmatter, stringifyFrontmatter } from "../vault/frontmatter.js";
-import { reusesValues } from "./budget.js";
+import { MAX_OUTPUT_BYTES, MAX_OUTPUT_NODES, exceedsOutputBudget, reusesValues } from "./budget.js";
 import { ScopedDenied } from "./guard.js";
 
 /**
  * Sets the token's front matter fields and adds its tags in a note's final text. Runs on the
  * result of every scoped write and patch, so a write or patch cannot remove or change them.
- * Also refuses front matter that reuses a list or mapping through a YAML alias: such a block can
- * expand to billions of values for every later reader and search (on both listeners).
+ * Also refuses front matter that reuses a list or mapping through a YAML alias, or that is too
+ * large once written out (see checkFrontmatterSize): such a block can expand to billions of values
+ * for every later reader and search, on both listeners.
  */
 export function enforceFrontmatter(
   raw: string,
@@ -23,6 +24,7 @@ export function enforceFrontmatter(
       "Front matter that reuses a list or mapping through a YAML alias (*name) is not accepted from this token",
     );
   }
+  checkFrontmatterSize(data);
   if (Object.keys(fields).length === 0 && tags.length === 0) return raw;
   const next: Record<string, unknown> = { ...data, ...fields };
   if (tags.length > 0) {
@@ -34,6 +36,22 @@ export function enforceFrontmatter(
     next.tags = [...new Set([...existing, ...tags])];
   }
   return stringifyFrontmatter(content, next);
+}
+
+/**
+ * Refuses front matter that would be too large to write back or to print: more than the output
+ * budget (about 2 MB as JSON, or 100 000 values). Measured on the parsed values, so a text anchor
+ * reused thousands of times (`b: [*x, *x, ...]`, which the alias check above lets pass because it
+ * only looks at lists and mappings) counts with its full length every time.
+ */
+export function checkFrontmatterSize(data: Record<string, unknown>): void {
+  if (exceedsOutputBudget(data)) {
+    throw new ScopedDenied(
+      "yaml-too-large",
+      `Front matter too large for this token (more than about ${MAX_OUTPUT_BYTES / 1024 / 1024} MB or ` +
+        `${MAX_OUTPUT_NODES} values once written out; a YAML alias counts every time it is used)`,
+    );
+  }
 }
 
 /** Per-token sliding one-hour window for scoped writes. Lives as long as the scoped listener. */
