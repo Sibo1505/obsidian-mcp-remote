@@ -61,11 +61,23 @@ async function parseNote(vaultRoot: string, relativePath: string): Promise<Omit<
   };
 }
 
-/** Resolves an Obsidian-style wikilink target to a vault-relative .md path, if one exists. */
-function resolveLinkTarget(link: string, allPaths: string[]): string | undefined {
-  const linkBase = link.split("/").pop() ?? link;
-  const wanted = linkBase.toLowerCase().endsWith(".md") ? linkBase.toLowerCase() : `${linkBase.toLowerCase()}.md`;
-  return allPaths.find((p) => (p.split("/").pop() ?? p).toLowerCase() === wanted);
+/**
+ * Resolves Obsidian-style wikilink targets to vault-relative .md paths: only the link's last part
+ * counts, compared in lower case, and the first matching path in `allPaths` order wins. Built once
+ * per index as a lookup table, so resolving costs the same for every link. (Searching all paths
+ * for every link took links × notes steps: seconds per search for a vault of 1 000 notes and a
+ * few notes full of links.)
+ */
+function linkResolver(allPaths: string[]): (link: string) => string | undefined {
+  const byName = new Map<string, string>();
+  for (const p of allPaths) {
+    const name = (p.split("/").pop() ?? p).toLowerCase();
+    if (!byName.has(name)) byName.set(name, p);
+  }
+  return (link) => {
+    const base = (link.split("/").pop() ?? link).toLowerCase();
+    return byName.get(base.endsWith(".md") ? base : `${base}.md`);
+  };
 }
 
 /**
@@ -76,10 +88,11 @@ export async function buildVaultIndex(vaultRoot: string, include?: NoteFilter): 
   const files = await listMarkdownFiles(vaultRoot, include);
   const partials = await Promise.all(files.map((f) => parseNote(vaultRoot, f)));
 
+  const resolveLinkTarget = linkResolver(files);
   const backlinkMap = new Map<string, Set<string>>();
   for (const note of partials) {
     for (const link of note.links) {
-      const target = resolveLinkTarget(link, files);
+      const target = resolveLinkTarget(link);
       if (!target) continue;
       if (!backlinkMap.has(target)) backlinkMap.set(target, new Set());
       backlinkMap.get(target)!.add(note.path);
