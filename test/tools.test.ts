@@ -544,6 +544,22 @@ test("search limits: a search that runs past its time budget is stopped with an 
   });
 });
 
+test("search limits: the time budget also covers reading the notes", async () => {
+  await withTempVault(async (vaultRoot) => {
+    await writeNote(vaultRoot, "a.md", "a");
+    const slowFilter = async () => {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      return true;
+    };
+    await assert.rejects(
+      () => runJsonLogicQuery(vaultRoot, { "==": [1, 1] }, slowFilter, limits({ timeBudgetMs: 50 })),
+      SearchLimitError,
+    );
+    // Without limits (the main listener) the same slow filter is fine.
+    assert.equal((await runJsonLogicQuery(vaultRoot, { "==": [1, 1] }, slowFilter)).length, 1);
+  });
+});
+
 test("searchQuery's regexp operator rejects an overly long pattern", async () => {
   await withTempVault(async (vaultRoot) => {
     await writeNote(vaultRoot, "a.md", "x".repeat(300));

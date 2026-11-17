@@ -246,6 +246,32 @@ test("scoped reads share pulls: concurrent readers wait for one pull, then there
   await third;
 });
 
+test("scoped reads use the shared pull: a second read within 10 seconds does not pull again", async () => {
+  await withGitFixture(async (vaultRoot, otherClone) => {
+    const publish = async (content: string) => {
+      await gitIn(otherClone, ["pull"]);
+      await mkdir(path.join(otherClone, "projects"), { recursive: true });
+      await writeFile(path.join(otherClone, "projects", "shared.md"), content);
+      await gitIn(otherClone, ["add", "."]);
+      await gitIn(otherClone, ["commit", "-m", `shared note: ${content}`]);
+      await gitIn(otherClone, ["push", "origin", "main"]);
+    };
+    await withScopedServer(
+      [makeScopedToken()],
+      async ({ baseUrl }) => {
+        await publish("first");
+        const first = await callTool(baseUrl, "vault_read", { path: "projects/shared.md" });
+        assert.equal(JSON.parse(first.text).content, "first");
+        await publish("second");
+        // Same throttle window: no new pull, so the read still shows the first version.
+        const second = await callTool(baseUrl, "vault_read", { path: "projects/shared.md" });
+        assert.equal(JSON.parse(second.text).content, "first");
+      },
+      { vaultRoot },
+    );
+  });
+});
+
 test("main listener: a scoped token is rejected there, even from a tailnet address", async () => {
   await withTestServer(async (baseUrl) => {
     const res = await mcpRequest(baseUrl, SCOPED_SECRET, "tools/list", {}, { "X-Forwarded-For": "100.64.0.10" });
