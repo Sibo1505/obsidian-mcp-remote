@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { monitorEventLoopDelay } from "node:perf_hooks";
+import { gitIn, withGitFixture } from "./helpers.js";
 import { WRITE_DIR, callTool, makeScopedToken, withScopedServer } from "./scoped-helpers.js";
 
 // Resource limits of the scoped listener. A scoped client must not be able to stall the server
@@ -149,6 +150,68 @@ test("scoped vault_write refuses front matter that reuses a list or mapping thro
       assert.match(smallResult.text, /alias/);
     });
   }
+});
+
+// --- total path length (Windows stops a pull at paths over 260 characters, vault folder included) ---
+
+test("scoped vault_write: a path of at most 170 characters is accepted, a longer one is refused", async () => {
+  await withScopedServer([makeScopedToken()], async ({ baseUrl, vaultRoot }) => {
+    const folder = `${WRITE_DIR}/${"a".repeat(100)}`;
+    const fits = `${folder}/${"b".repeat(170 - folder.length - 1 - ".md".length)}.md`;
+    const tooLong = `${folder}/${"b".repeat(171 - folder.length - 1 - ".md".length)}.md`;
+    assert.equal(fits.length, 170);
+    assert.equal(tooLong.length, 171);
+    const ok = await callTool(baseUrl, "vault_write", { path: fits, content: "x" });
+    assert.equal(ok.isError, false, ok.text);
+    const refused = await callTool(baseUrl, "vault_write", { path: tooLong, content: "x" });
+    assert.equal(refused.isError, true);
+    assert.match(refused.text, /at most 170 characters/);
+    await assert.rejects(() => stat(path.join(vaultRoot, tooLong)));
+  });
+});
+
+test("whole-vault token: the path length counts existing folders too", async () => {
+  await withScopedServer([makeScopedToken({ writeDir: "", writeDeny: [] })], async ({ baseUrl, vaultRoot, logs }) => {
+    const existing = `Projects/${"x".repeat(130)}`;
+    await mkdir(path.join(vaultRoot, existing), { recursive: true });
+    const candidates = [
+      `${existing}/${"n".repeat(35)}.md`,
+      `Projects/${"a".repeat(100)}/${"b".repeat(100)}/${"c".repeat(100)}/n.md`,
+    ];
+    for (const candidate of candidates) {
+      const result = await callTool(baseUrl, "vault_write", { path: candidate, content: "x" });
+      assert.equal(result.isError, true, candidate.length.toString());
+      assert.match(result.text, /at most 170 characters/);
+    }
+    assert.equal(logs.filter((l) => l.endsWith("result=denied:too-long")).length, 2);
+  });
+});
+
+test("a conflict copy of a note with the longest allowed path stays within 200 characters", async () => {
+  await withGitFixture(async (vaultRoot, otherClone) => {
+    await withScopedServer(
+      [makeScopedToken()],
+      async ({ baseUrl }) => {
+        const folder = `${WRITE_DIR}/${"a".repeat(100)}`;
+        const notePath = `${folder}/${"b".repeat(170 - folder.length - 1 - ".md".length)}.md`;
+        assert.equal((await callTool(baseUrl, "vault_write", { path: notePath, content: "first\n" })).isError, false);
+
+        await gitIn(otherClone, ["pull"]);
+        await writeFile(path.join(otherClone, notePath), "edited on another device\n");
+        await gitIn(otherClone, ["add", "."]);
+        await gitIn(otherClone, ["commit", "-m", "other device edits the note"]);
+        await gitIn(otherClone, ["push", "origin", "main"]);
+
+        const result = await callTool(baseUrl, "vault_write", { path: notePath, content: "mine\n" });
+        const sync = JSON.parse(result.text) as { conflict?: boolean; conflictPath?: string };
+        assert.equal(sync.conflict, true, result.text);
+        assert.ok(sync.conflictPath!.length <= 200, `${sync.conflictPath!.length} characters`);
+        assert.match(sync.conflictPath!, /-conflict-\d{14}\.md$/);
+        assert.match(await readFile(path.join(vaultRoot, sync.conflictPath!), "utf-8"), /mine/);
+      },
+      { vaultRoot },
+    );
+  });
 });
 
 // --- audit line length ---

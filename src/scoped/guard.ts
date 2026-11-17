@@ -7,6 +7,7 @@ import {
   MAX_DEPTH_BELOW_WRITE_DIR,
   MAX_DEPTH_WHOLE_VAULT,
   MAX_NEW_FOLDERS,
+  MAX_WRITE_PATH_LENGTH,
   pathSegmentProblem,
   segmentProblem,
 } from "./names.js";
@@ -32,16 +33,23 @@ export function checkNoteSize(text: string): void {
 }
 
 /**
- * Checks the requested path as text, before touching the disk: it must already be in normal form
- * (no "..", ".", "//" or "\"), lie below `writeDir` (anywhere when `writeDir` is "", the whole
- * vault), stay out of `writeDeny`, and every part must follow `pathSegmentProblem`. Names that do
- * not exist yet get the stricter `segmentProblem` in `resolveWriteTarget`, which knows what exists.
- * Returns the parts below `writeDir` (folders, then the file name).
+ * Checks the requested path as text, before touching the disk: at most `maxLength` characters in
+ * total (existing folders count too), already in normal form (no "..", ".", "//" or "\"), below
+ * `writeDir` (anywhere when `writeDir` is "", the whole vault), out of `writeDeny`, and every part
+ * must follow `pathSegmentProblem`. Names that do not exist yet get the stricter `segmentProblem`
+ * in `resolveWriteTarget`, which knows what exists. Returns the parts below `writeDir` (folders,
+ * then the file name).
  */
-export function checkWritePath(writeDir: string, writeDeny: string[], relativePath: string): string[] {
+export function checkWritePath(
+  writeDir: string,
+  writeDeny: string[],
+  relativePath: string,
+  maxLength = MAX_WRITE_PATH_LENGTH,
+): string[] {
   const reject = (code: string, why: string): never => {
     throw new ScopedDenied(code, `Write rejected for ${JSON.stringify(relativePath)}: ${why}`);
   };
+  if (relativePath.length > maxLength) reject("too-long", `at most ${maxLength} characters in total`);
   if (
     relativePath.includes("\\") ||
     relativePath.startsWith("/") ||
