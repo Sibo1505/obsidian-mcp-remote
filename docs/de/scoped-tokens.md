@@ -45,7 +45,10 @@ Eingeschränkte Tokens nutzen einen **eigenen Listener auf einem eigenen Port**.
   Worker-Thread mit Speichergrenze (256 MB) und wird nach 10 Sekunden gestoppt, egal, was sie gerade
   tut, auch mitten in einem einzelnen langsamen regulären Ausdruck. Es läuft immer nur eine
   eingeschränkte Suche; eine zweite bekommt einen Fehler („Another search is still running“),
-  statt zu warten. Der Server selbst, und damit der Haupt-Port, antwortet weiter.
+  statt zu warten. Der Server selbst, und damit der Haupt-Port, antwortet weiter. Diesen einen
+  Platz teilen sich alle eingeschränkten Tokens: Ein Client, der alle 10 Sekunden eine teure Suche
+  schickt, hält ihn (und einen CPU-Kern) dauerhaft belegt, und andere eingeschränkte Tokens bekommen
+  solange diesen Fehler.
 - **Ergebnisse haben eine Obergrenze.** Jedes eingeschränkte Ergebnis darf als JSON höchstens etwa
   2 MB und 100 000 Werte haben. Der Server misst das, bevor er die Antwort baut, und zählt dabei
   jeden YAML-Alias (`*name`) bei jeder Verwendung. Eine kleine Notiz, deren Frontmatter sich zu

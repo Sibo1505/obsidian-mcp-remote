@@ -41,6 +41,8 @@ Scoped tokens use their **own listener on their own port**. The main listener (`
   (256 MB) and is stopped after 10 seconds whatever it is doing, also inside a single slow regular
   expression. Only one scoped search runs at a time; a second one gets an error ("Another search is
   still running") instead of waiting. The server itself, and with it the main port, keeps answering.
+  That one slot is shared by all scoped tokens: a client that sends an expensive search every
+  10 seconds keeps it (and one CPU core) busy, and other scoped tokens get that error meanwhile.
 - **Results have a ceiling.** Every scoped result may have at most about 2 MB as JSON and 100 000
   values. The server measures that before it builds the answer, counting a YAML alias (`*name`)
   every time it is used, so a small note whose front matter expands to millions of values is
