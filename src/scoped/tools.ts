@@ -162,8 +162,10 @@ export function registerScopedTools(server: McpServer, ctx: ScopedToolContext): 
   const newNames = `new folders and notes need names of lowercase letters, digits and "-" (notes ending in .md)`;
   const writeRules =
     writeDir === ""
-      ? `This token can write Markdown notes anywhere in the vault except hidden folders, agent instruction ` +
-        `files and these paths: ${writeDeny.length > 0 ? writeDeny.join(", ") : "(none)"}. Existing notes keep ` +
+      ? // The deny lists stay out of the description: they would tell every client which notes
+        // matter most. A denied write says so when it happens ("not writable with this token").
+        `This token can write Markdown notes anywhere in the vault except hidden folders, agent instruction ` +
+        `files and paths this token may not write. Existing notes keep ` +
         `their names; ${newNames}; at most ${MAX_DEPTH_WHOLE_VAULT} path parts and ${MAX_NEW_FOLDERS} new ` +
         `folders per write, at most ${MAX_NOTE_BYTES / 1024} KB.`
       : `This token can only write Markdown notes below ${writeDir}/: ${newNames}, ` +
