@@ -1,8 +1,12 @@
 import { JAVASCRIPT_FRONTMATTER_ERROR, parseFrontmatter, stringifyFrontmatter } from "../vault/frontmatter.js";
+import { reusesValues } from "./budget.js";
+import { ScopedDenied } from "./guard.js";
 
 /**
  * Sets the token's front matter fields and adds its tags in a note's final text. Runs on the
  * result of every scoped write and patch, so a write or patch cannot remove or change them.
+ * Also refuses front matter that reuses a list or mapping through a YAML alias: such a block can
+ * expand to billions of values for every later reader and search (on both listeners).
  */
 export function enforceFrontmatter(
   raw: string,
@@ -13,6 +17,12 @@ export function enforceFrontmatter(
   const { content, data, javascript } = parseFrontmatter(raw, source);
   // Never store such a block for a scoped token, and never drop it silently either.
   if (javascript) throw new Error(JAVASCRIPT_FRONTMATTER_ERROR);
+  if (reusesValues(data)) {
+    throw new ScopedDenied(
+      "yaml-alias",
+      "Front matter that reuses a list or mapping through a YAML alias (*name) is not accepted from this token",
+    );
+  }
   if (Object.keys(fields).length === 0 && tags.length === 0) return raw;
   const next: Record<string, unknown> = { ...data, ...fields };
   if (tags.length > 0) {

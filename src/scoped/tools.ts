@@ -7,8 +7,8 @@ import { vaultWriteSchema } from "../tools/vault-write.js";
 import { vaultPatchSchema, applyPatch } from "../tools/vault-patch.js";
 import { vaultListSchema } from "../tools/vault-list.js";
 import { searchQuerySchema } from "../tools/search-query.js";
-import { hasBlockedSegment, listDir, resolveInVault } from "../vault/fs.js";
-import { runJsonLogicQuery, SCOPED_SEARCH_LIMITS, SearchLimitError } from "../vault/search.js";
+import { hasBlockedSegment, listDir, resolveInVault, statNote } from "../vault/fs.js";
+import { SCOPED_SEARCH_LIMITS, SearchLimitError } from "../vault/search.js";
 import { commitAndPush, type CommitOptions } from "../vault/git.js";
 import type { ScopedToken } from "./config.js";
 import {
@@ -19,6 +19,8 @@ import {
   toSafeStem,
 } from "./names.js";
 import { enforceFrontmatter, type WriteBudget } from "./enforce.js";
+import { MAX_OUTPUT_BYTES, exceedsOutputBudget } from "./budget.js";
+import type { ScopedSearch } from "./search-runner.js";
 import {
   MAX_NOTE_BYTES,
   ScopedDenied,
@@ -38,6 +40,8 @@ export interface ScopedToolContext {
   log: (line: string) => void;
   /** Freshness pull before a read, shared and throttled across requests (see pull.ts). */
   pull: () => Promise<void>;
+  /** Runs search_query in a worker, one search at a time (see search-runner.ts). */
+  search: ScopedSearch;
   /** Called when a tool call reaches its tool, which then writes the audit line. */
   reached?: () => void;
 }
@@ -62,10 +66,21 @@ function clientError(error: unknown, requestedPath: string): { text: string; log
   return { text: error instanceof Error ? error.message : String(error), logged: "error" };
 }
 
+/** Longest path an audit line shows; a longer one is cut, so one request cannot write a huge line. */
+const MAX_LOGGED_PATH = 300;
+
+const loggedPath = (requested: string) =>
+  requested.length > MAX_LOGGED_PATH
+    ? `${requested.slice(0, MAX_LOGGED_PATH)}…(+${requested.length - MAX_LOGGED_PATH})`
+    : requested;
+
+const MEGABYTES = MAX_OUTPUT_BYTES / 1024 / 1024;
+
 /**
  * Runs one tool call and writes exactly one audit line for it: token name, tool, path and outcome.
  * Never the note content, never the token, and never a raw error message (some, like JSON.parse
- * errors, quote the input).
+ * errors, quote the input). Every result must fit the output budget (see budget.ts) before it is
+ * turned into text.
  */
 async function audited(
   ctx: ScopedToolContext,
@@ -75,9 +90,15 @@ async function audited(
 ): Promise<CallToolResult> {
   ctx.reached?.();
   const line = (result: string) =>
-    `scoped token=${ctx.token.name} tool=${tool} path=${JSON.stringify(requestedPath)} result=${result}`;
+    `scoped token=${ctx.token.name} tool=${tool} path=${JSON.stringify(loggedPath(requestedPath))} result=${result}`;
   try {
     const value = await fn();
+    if (exceedsOutputBudget(value)) {
+      throw new ScopedDenied(
+        "too-large",
+        `Result too large for this token (more than about ${MEGABYTES} MB); read a heading or a front matter field, or narrow the query`,
+      );
+    }
     ctx.log(line("ok"));
     return { content: [{ type: "text", text: JSON.stringify(value, null, 2) }] };
   } catch (error) {
@@ -151,6 +172,10 @@ export function registerScopedTools(server: McpServer, ctx: ScopedToolContext): 
       audited(ctx, "vault_read", input.path, async () => {
         await ctx.pull();
         await checkReadable(vault, readDeny, input.path);
+        // Refuse before reading: the whole file would be loaded and then refused anyway.
+        if ((await statNote(vault, input.path)).size > MAX_OUTPUT_BYTES) {
+          throw new ScopedDenied("too-large", `File too large to read with this token (more than ${MEGABYTES} MB): ${input.path}`);
+        }
         return vaultRead(vault, input);
       }),
   );
@@ -213,16 +238,13 @@ export function registerScopedTools(server: McpServer, ctx: ScopedToolContext): 
     (input) =>
       audited(ctx, "search_query", "-", async () => {
         await ctx.pull();
-        const readable = async (relativePath: string) => {
-          try {
-            await checkReadable(vault, readDeny, relativePath);
-            return true;
-          } catch {
-            return false;
-          }
-        };
         try {
-          return await runJsonLogicQuery(vault, input.query as object, readable, SCOPED_SEARCH_LIMITS);
+          return await ctx.search.run({
+            vaultRoot: vault,
+            readDeny,
+            query: input.query as object,
+            limits: SCOPED_SEARCH_LIMITS,
+          });
         } catch (error) {
           if (error instanceof SearchLimitError) throw new ScopedDenied("search-limit", error.message);
           throw error;
