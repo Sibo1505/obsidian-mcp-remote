@@ -125,7 +125,8 @@ test("scoped vault_read: a file over the output limit is refused before it is re
     await plant(vaultRoot, "attachments/fits.md", "x".repeat(1024 * 1024));
     const big = await callTool(baseUrl, "vault_read", { path: "attachments/big.pdf" });
     assert.equal(big.isError, true);
-    assert.match(big.text, /too large/);
+    // Refused by its size on disk, not after reading it (that would say "Result too large").
+    assert.match(big.text, /^File too large/);
     assert.ok(logs.includes('scoped token=test-agent tool=vault_read path="attachments/big.pdf" result=denied:too-large'));
     const fits = await callTool(baseUrl, "vault_read", { path: "attachments/fits.md" });
     assert.equal(fits.isError, false);
