@@ -153,6 +153,64 @@ test("scoped vault_write refuses front matter that reuses a list or mapping thro
   }
 });
 
+// One text anchor, used 20 000 times: 180 KB of YAML that passes the list/mapping alias check, but
+// written out (or printed as JSON) it is 2 GB of text.
+const TEXT_ALIAS_NOTE = `---\na: &x "${"A".repeat(100_000)}"\nb: [${Array(20_000).fill("*x").join(", ")}]\n---\nbody\n`;
+
+test("scoped vault_write refuses front matter that repeats one text through an alias, without blocking the server", async () => {
+  for (const token of [makeScopedToken(), makeScopedToken({ frontmatter: {}, tags: [] })]) {
+    await withScopedServer([token], async ({ baseUrl, vaultRoot, logs }) => {
+      const { value: result, maxBlockMs } = await measureBlock(() =>
+        callTool(baseUrl, "vault_write", { path: `${WRITE_DIR}/alias.md`, content: TEXT_ALIAS_NOTE }),
+      );
+      assert.equal(result.isError, true, result.text.slice(0, 200));
+      assert.match(result.text, /^Front matter too large/);
+      assert.ok(maxBlockMs < MAX_BLOCK_MS, `event loop blocked ${maxBlockMs} ms`);
+      assert.ok(logs.includes(`scoped token=test-agent tool=vault_write path="${WRITE_DIR}/alias.md" result=denied:yaml-too-large`));
+      await assert.rejects(() => stat(path.join(vaultRoot, WRITE_DIR, "alias.md")));
+    });
+  }
+});
+
+test("scoped vault_patch refuses a note whose existing front matter is too large, without blocking the server", async () => {
+  await withScopedServer([makeScopedToken()], async ({ baseUrl, vaultRoot }) => {
+    // Written by someone else (another device, the main port); the scoped token only patches it.
+    await plant(vaultRoot, `${WRITE_DIR}/alias.md`, `${TEXT_ALIAS_NOTE}# Section\ntext\n`);
+    const { value: result, maxBlockMs } = await measureBlock(() =>
+      callTool(baseUrl, "vault_patch", {
+        path: `${WRITE_DIR}/alias.md`,
+        targetType: "heading",
+        target: "Section",
+        operation: "append",
+        content: "more",
+        contentType: "text/markdown",
+        createTargetIfMissing: false,
+        trimTargetWhitespace: false,
+        rejectIfContentPreexists: false,
+        targetScope: "content",
+        targetDelimiter: "::",
+      }),
+    );
+    assert.equal(result.isError, true, result.text.slice(0, 200));
+    assert.match(result.text, /^Front matter too large/);
+    assert.ok(maxBlockMs < MAX_BLOCK_MS, `event loop blocked ${maxBlockMs} ms`);
+  });
+});
+
+test("a scoped write attempt counts against writesPerHour once its path and size pass, even when its front matter is refused", async () => {
+  await withScopedServer([makeScopedToken({ writesPerHour: 1 })], async ({ baseUrl, logs }) => {
+    // A path the token may never write is refused before anything is counted ...
+    assert.equal((await callTool(baseUrl, "vault_write", { path: "elsewhere.md", content: "x" })).isError, true);
+    // ... so this attempt still gets to its front matter check, and uses up the hour.
+    const refused = await callTool(baseUrl, "vault_write", { path: `${WRITE_DIR}/alias.md`, content: TEXT_ALIAS_NOTE });
+    assert.match(refused.text, /^Front matter too large/);
+    const next = await callTool(baseUrl, "vault_write", { path: `${WRITE_DIR}/plain.md`, content: "plain" });
+    assert.equal(next.isError, true, next.text);
+    assert.match(next.text, /1 per hour/);
+    assert.ok(logs.includes(`scoped token=test-agent tool=vault_write path="${WRITE_DIR}/plain.md" result=denied:write-limit`));
+  });
+});
+
 // --- total path length (Windows stops a pull at paths over 260 characters, vault folder included) ---
 
 test("scoped vault_write: a path of at most 170 characters is accepted, a longer one is refused", async () => {
