@@ -15,6 +15,7 @@ import {
   MAX_DEPTH_BELOW_WRITE_DIR,
   MAX_DEPTH_WHOLE_VAULT,
   MAX_NEW_FOLDERS,
+  MAX_PATH_LENGTH,
   MAX_SEGMENT_LENGTH,
   toSafeStem,
 } from "./names.js";
@@ -133,9 +134,12 @@ function commitOptions(ctx: ScopedToolContext): CommitOptions {
       const parts = relativePath.split("/");
       const fileName = parts.pop()!;
       const suffix = `-conflict-${compactUtcStamp()}.md`;
-      const stem = toSafeStem(fileName.slice(0, -".md".length), MAX_SEGMENT_LENGTH - suffix.length);
+      // The copy's name must fit one path part and the whole path.
+      const folders = parts.length > 0 ? parts.join("/").length + 1 : 0;
+      const room = Math.min(MAX_SEGMENT_LENGTH, MAX_PATH_LENGTH - folders) - suffix.length;
+      const stem = toSafeStem(fileName.slice(0, -".md".length), room);
       const conflictPath = [...parts, `${stem}${suffix}`].join("/");
-      const inner = checkWritePath(writeDir, writeDeny, conflictPath);
+      const inner = checkWritePath(writeDir, writeDeny, conflictPath, MAX_PATH_LENGTH);
       const target = await resolveWriteTarget(ctx.config.VAULT_PATH, writeDir, inner, { createDirs: true });
       await writeFileNoFollow(target, ourContent);
       return conflictPath;
