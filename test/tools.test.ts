@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import matter from "gray-matter";
 import { parseFrontmatter, stringifyFrontmatter } from "../src/vault/frontmatter.js";
-import { runJsonLogicQuery, SCOPED_SEARCH_LIMITS, SearchLimitError, type SearchLimits } from "../src/vault/search.js";
+import { buildVaultIndex, runJsonLogicQuery, SCOPED_SEARCH_LIMITS, SearchLimitError, type SearchLimits } from "../src/vault/search.js";
 import { vaultRead } from "../src/tools/vault-read.js";
 import { vaultWrite } from "../src/tools/vault-write.js";
 import { vaultPatch } from "../src/tools/vault-patch.js";
@@ -484,6 +484,85 @@ test("a heading line with 200 000 spaces before a line break is handled in linea
       /Heading not found/,
     );
     assert.ok(Date.now() - started < 1000, `patch took ${Date.now() - started} ms`);
+  });
+});
+
+// --- wikilink resolution: same backlinks, linear time ---
+
+/**
+ * Backlinks as the server has always resolved them, as the reference: a link names a file
+ * ("plan", "Plan.md", "folder/plan"); only the last part counts, compared in lower case, and the
+ * first matching path in index order wins.
+ */
+function referenceBacklinks(index: { path: string; links: string[] }[]): [string, string[]][] {
+  const allPaths = index.map((note) => note.path);
+  const backlinks = new Map<string, Set<string>>();
+  for (const note of index) {
+    for (const link of note.links) {
+      const base = (link.split("/").pop() ?? link).toLowerCase();
+      const wanted = base.endsWith(".md") ? base : `${base}.md`;
+      const target = allPaths.find((p) => (p.split("/").pop() ?? p).toLowerCase() === wanted);
+      if (!target) continue;
+      if (!backlinks.has(target)) backlinks.set(target, new Set());
+      backlinks.get(target)!.add(note.path);
+    }
+  }
+  return index.map((note) => [note.path, [...(backlinks.get(note.path) ?? [])]]);
+}
+
+test("wikilinks resolve to the same backlinks as before (case, same names in several folders, .md, paths)", async () => {
+  const folders = ["", "Projects", "projects-old", "Area/Sub", "area/other", "Notes"];
+  const stems = ["Plan", "plan", "PLAN", "idea", "Idea", "note", "Note-2", "x.y"];
+  for (const seed of [1, 2, 3]) {
+    await withTempVault(async (vaultRoot) => {
+      const random = seededRandom(seed);
+      const pick = <T>(items: T[]) => items[Math.floor(random() * items.length)];
+      const taken = new Set<string>();
+      for (let i = 0; i < 80; i++) {
+        const folder = pick(folders);
+        const stem = pick(stems);
+        // One file per name and folder in any case: Windows and macOS could not hold both.
+        const key = `${folder}/${stem}`.toLowerCase();
+        if (taken.has(key)) continue;
+        taken.add(key);
+        const links = Array.from({ length: 1 + Math.floor(random() * 5) }, () => {
+          const name = pick([...stems, "missing", "Missing.MD"]);
+          const variant = pick([name, name.toUpperCase(), name.toLowerCase(), `${name}.md`, `${pick(folders)}/${name}`]);
+          return `[[${variant}${pick(["", "|alias", "#Heading"])}]]`;
+        });
+        await mkdir(path.join(vaultRoot, folder), { recursive: true });
+        await writeNote(vaultRoot, `${folder ? `${folder}/` : ""}${stem}.md`, `# ${stem}\n${links.join(" ")}\n`);
+      }
+      const index = await buildVaultIndex(vaultRoot);
+      assert.deepEqual(
+        index.map((note) => [note.path, note.backlinks]),
+        referenceBacklinks(index),
+        `seed ${seed}`,
+      );
+      // The cases this is about really occur: a name in several folders, and a backlink to one.
+      const names = index.map((note) => (note.path.split("/").pop() ?? "").toLowerCase());
+      assert.ok(names.length > new Set(names).size, `seed ${seed}: no name in several folders`);
+      assert.ok(index.some((note) => note.backlinks.length > 0), `seed ${seed}: no backlinks`);
+    });
+  }
+});
+
+test("a search over 1 000 notes and 5 notes with 22 000 wikilinks each takes under 1.5 s (was 11 s)", async () => {
+  await withTempVault(async (vaultRoot) => {
+    for (let i = 0; i < 1000; i++) {
+      await mkdir(path.join(vaultRoot, `area-${i % 20}`), { recursive: true });
+      await writeNote(vaultRoot, `area-${i % 20}/note-${i}.md`, `# Note ${i}\n\nSee [[note-${(i + 1) % 1000}]].\n`);
+    }
+    for (let j = 0; j < 5; j++) {
+      let body = "";
+      for (let i = 0; Buffer.byteLength(body) < 200 * 1024 - 200; i++) body += `[[l${j}x${i}]]`;
+      await writeNote(vaultRoot, `inbox/links-${j}.md`, body);
+    }
+    const started = Date.now();
+    const results = await searchQuery(vaultRoot, { query: { "==": [{ var: "path" }, "area-1/note-1.md"] } });
+    const took = Date.now() - started;
+    assert.deepEqual(results.map((r) => r.filename), ["area-1/note-1.md"]);
+    assert.ok(took < 1500, `search took ${took} ms`);
   });
 });
 
