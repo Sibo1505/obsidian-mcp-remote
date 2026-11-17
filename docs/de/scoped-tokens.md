@@ -60,7 +60,7 @@ Eingeschränkte Tokens nutzen einen **eigenen Listener auf einem eigenen Port**.
     (`<>:"|?*`, Steuerzeichen, Leerzeichen oder Punkt am Ende), nur `.md`-Notizen, kein Name, der
     mit einem der bekannten Anweisungsnamen von Agents beginnt (Liste unter [Grenzen](#grenzen)),
     und keine Windows-Gerätenamen (`con`, `prn`, `aux`, `nul`, `com0`–`com9`, `lpt0`–`lpt9`).
-    Ordner wie `claude-config/` bleiben damit auch ohne `writeDeny`-Eintrag gesperrt;
+    Ordner wie `claude-skills/` bleiben damit auch ohne `writeDeny`-Eintrag gesperrt;
   - **was das Schreiben neu anlegt** (neue Ordner und eine neue Notiz), muss auf
     `^[a-z0-9][a-z0-9-]*$` (Ordner) bzw. `^[a-z0-9][a-z0-9-]*\.md$` (Notizen) passen: keine
     Großbuchstaben, keine Leerzeichen. Vorhandene Ordner und Notizen behalten ihre Namen. Mit
