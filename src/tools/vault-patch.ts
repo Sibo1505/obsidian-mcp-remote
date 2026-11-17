@@ -19,7 +19,8 @@ export const vaultPatchSchema = z.object({
 
 export type VaultPatchInput = z.infer<typeof vaultPatchSchema>;
 
-function parseContentValue(input: VaultPatchInput): unknown {
+/** The patch value: `content` itself, or parsed when `contentType` is JSON. */
+export function parseContentValue(input: VaultPatchInput): unknown {
   if (input.contentType === "application/json") {
     return typeof input.content === "string" ? JSON.parse(input.content) : input.content;
   }
