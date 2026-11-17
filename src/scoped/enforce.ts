@@ -1,6 +1,20 @@
-import { JAVASCRIPT_FRONTMATTER_ERROR, parseFrontmatter, stringifyFrontmatter } from "../vault/frontmatter.js";
+import { JAVASCRIPT_FRONTMATTER_ERROR, parseFrontmatter, stringifyFrontmatter, type ParsedNote } from "../vault/frontmatter.js";
 import { DUMP_BUDGET, MAX_DUMP_VALUES, MAX_OUTPUT_BYTES, exceedsOutputBudget, reusesValues } from "./budget.js";
 import { ScopedDenied } from "./guard.js";
+
+/**
+ * True when a note carries every one of `fields` in its front matter with exactly that value and
+ * type: a note written for this token, since every scoped write sets them. Front matter that is
+ * JavaScript, not valid YAML or not a mapping parses to no fields (see parseFrontmatter), so it
+ * never matches.
+ */
+export function isOwnNote(note: ParsedNote, fields: Record<string, string | number | boolean>): boolean {
+  const wanted = Object.entries(fields);
+  return (
+    wanted.length > 0 &&
+    wanted.every(([key, value]) => Object.prototype.hasOwnProperty.call(note.data, key) && note.data[key] === value)
+  );
+}
 
 /**
  * Sets the token's front matter fields and adds its tags in a note's final text. Runs on the

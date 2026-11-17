@@ -3,13 +3,21 @@
 // write creates must follow the strict naming rules and must not differ from a sibling only in case.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { gitIn, withGitFixture } from "./helpers.js";
+import { gitIn, withGitFixture, withTestServer } from "./helpers.js";
+import { withGitLock } from "../src/vault/git.js";
 import { toSafeStem } from "../src/scoped/names.js";
 import type { ScopedToken } from "../src/scoped/config.js";
-import { callTool, makeScopedToken, mcpRequest, withScopedServer, type ScopedTestContext } from "./scoped-helpers.js";
+import {
+  WRITE_DIR,
+  callTool,
+  makeScopedToken,
+  mcpRequest,
+  withScopedServer,
+  type ScopedTestContext,
+} from "./scoped-helpers.js";
 
 async function exists(target: string): Promise<boolean> {
   try {
@@ -183,16 +191,16 @@ test("whole-vault token: a new note in an existing mixed-case folder is written 
   });
 });
 
-test("whole-vault token: an existing note with spaces in its path can be overwritten (and is marked)", async () => {
+test('whole-vault token with modifyExisting "any": an existing note with spaces in its path can be overwritten (and is marked)', async () => {
   await withWholeVault(async ({ baseUrl, vaultRoot }) => {
     const result = await callTool(baseUrl, "vault_write", { path: "My Notes/Eine Notiz.md", content: "# Neu\n" });
     assert.equal(result.isError, false, result.text);
     const text = await readFile(path.join(vaultRoot, "My Notes", "Eine Notiz.md"), "utf-8");
     assert.match(text, /^---\n[\s\S]*source: test-agent[\s\S]*---\n# Neu\n$/);
-  });
+  }, wholeVaultToken({ modifyExisting: "any" }));
 });
 
-test("whole-vault token: vault_patch on an existing note keeps its tags and adds the server's marks", async () => {
+test('whole-vault token with modifyExisting "any": vault_patch on an existing note keeps its tags and adds the server\'s marks', async () => {
   await withWholeVault(async ({ baseUrl }) => {
     const result = await callTool(baseUrl, "vault_patch", {
       ...patchDefaults,
@@ -208,7 +216,7 @@ test("whole-vault token: vault_patch on an existing note keeps its tags and adds
     assert.equal(note.frontmatter.source, "test-agent");
     assert.deepEqual(note.frontmatter.tags, ["project", "scoped"]);
     assert.match(note.content, /## Status\nneu/);
-  });
+  }, wholeVaultToken({ modifyExisting: "any" }));
 });
 
 test("whole-vault token: a write may create up to three new plain folders, anywhere, also at the root", async () => {
@@ -232,6 +240,300 @@ test("whole-vault token: the tool descriptions never name the denied paths", asy
     for (const tool of tools) {
       assert.doesNotMatch(tool.description, /resources\/rules|private/i, tool.name);
     }
+    // "own" tells the client the way out before it tries.
+    assert.match(write.description, /Existing notes this token did not write cannot be changed; create a new note and link to it/);
+  });
+});
+
+test('whole-vault token with modifyExisting "any": the description does not claim the "own" rule', async () => {
+  await withWholeVault(async ({ baseUrl }) => {
+    const res = await mcpRequest(baseUrl, makeScopedToken().secret, "tools/list");
+    const tools = (res.body as { result: { tools: { name: string; description: string }[] } }).result.tools;
+    assert.doesNotMatch(tools.find((tool) => tool.name === "vault_write")!.description, /did not write/);
+  }, wholeVaultToken({ modifyExisting: "any" }));
+});
+
+// --- only its own notes (modifyExisting "own", the default for the whole vault) ---
+
+/** A note the token wrote: it carries the token's front matter. */
+const OWN_NOTE = "---\nsource: test-agent\ntags:\n  - scoped\n---\n# Own\n\n## Status\nold\n";
+
+/** Every way a scoped token can change an existing note. */
+const CHANGES: [label: string, tool: string, args: Record<string, unknown>][] = [
+  ["vault_write replaces it", "vault_write", { content: "# replaced\n" }],
+  [
+    "vault_patch appends to a heading",
+    "vault_patch",
+    { ...patchDefaults, targetType: "heading", target: "Status", operation: "append", content: "injected", createTargetIfMissing: true },
+  ],
+  [
+    "vault_patch replaces a heading",
+    "vault_patch",
+    { ...patchDefaults, targetType: "heading", target: "Status", operation: "replace", content: "injected", createTargetIfMissing: true },
+  ],
+  [
+    "vault_patch sets a front matter field",
+    "vault_patch",
+    { ...patchDefaults, targetType: "frontmatter", target: "status", operation: "replace", content: "done", createTargetIfMissing: true },
+  ],
+  [
+    "vault_patch appends to the tags",
+    "vault_patch",
+    { ...patchDefaults, targetType: "frontmatter", target: "tags", operation: "append", content: "injected", createTargetIfMissing: true },
+  ],
+  [
+    "vault_patch on a block",
+    "vault_patch",
+    { ...patchDefaults, targetType: "block", target: "abc123", operation: "append", content: "injected" },
+  ],
+];
+
+for (const [label, tool, args] of CHANGES) {
+  test(`whole-vault token ("own"): ${label} is refused for notes it did not write, which stay byte for byte`, async () => {
+    await withWholeVault(async ({ baseUrl, vaultRoot, logs }) => {
+      const before = await snapshot(vaultRoot);
+      // No front matter, front matter without the token's fields, a free-form name.
+      const foreign = ["Home.md", "Projects/plan.md", "My Notes/Eine Notiz.md"];
+      for (const notePath of foreign) {
+        const result = await callTool(baseUrl, tool, { ...args, path: notePath });
+        assert.equal(result.isError, true, `${notePath}: ${result.text}`);
+        assert.match(result.text, /create a new note and link to it/, notePath);
+      }
+      assert.equal(logs.filter((l) => l.includes(`tool=${tool}`) && l.endsWith("result=denied:foreign-note")).length, foreign.length);
+      assert.deepEqual(await snapshot(vaultRoot), before);
+    });
+  });
+}
+
+test('whole-vault token ("own"): its own note stays changeable in every way, and stays its own', async () => {
+  await withWholeVault(async ({ baseUrl, vaultRoot }) => {
+    await writeFile(path.join(vaultRoot, "Projects", "own.md"), OWN_NOTE);
+    for (const [label, tool, args] of CHANGES.filter(([, , a]) => a.targetType !== "block")) {
+      const result = await callTool(baseUrl, tool, { ...args, path: "Projects/own.md" });
+      assert.equal(result.isError, false, `${label}: ${result.text}`);
+    }
+    const text = await readFile(path.join(vaultRoot, "Projects", "own.md"), "utf-8");
+    assert.match(text, /^---\n[\s\S]*source: test-agent\n[\s\S]*---\n/);
+    assert.match(text, /status: done/);
+    // A new note anywhere is still fine.
+    assert.equal((await callTool(baseUrl, "vault_write", { path: "Projects/new-note.md", content: "x\n" })).isError, false);
+  });
+});
+
+test('whole-vault token ("own"): a note with only some of the fields, another value or another type is not its own', async () => {
+  const token = wholeVaultToken({ frontmatter: { source: "test-agent", reviewed: false } });
+  await withWholeVault(async ({ baseUrl, vaultRoot, logs }) => {
+    const notes: Record<string, string> = {
+      "only-source.md": "---\nsource: test-agent\n---\n# x\n",
+      "other-value.md": "---\nsource: test-agent-2\nreviewed: false\n---\n# x\n",
+      "text-not-boolean.md": '---\nsource: test-agent\nreviewed: "false"\n---\n# x\n',
+      "other-case-key.md": "---\nSource: test-agent\nreviewed: false\n---\n# x\n",
+      "nested.md": "---\nmeta:\n  source: test-agent\n  reviewed: false\n---\n# x\n",
+    };
+    for (const [name, content] of Object.entries(notes)) await writeFile(path.join(vaultRoot, "Projects", name), content);
+    const before = await snapshot(vaultRoot);
+    for (const name of Object.keys(notes)) {
+      for (const [label, tool, args] of CHANGES.slice(0, 2)) {
+        const result = await callTool(baseUrl, tool, { ...args, path: `Projects/${name}` });
+        assert.equal(result.isError, true, `${name}, ${label}: ${result.text}`);
+      }
+    }
+    assert.equal(logs.filter((l) => l.endsWith("result=denied:foreign-note")).length, Object.keys(notes).length * 2);
+    assert.deepEqual(await snapshot(vaultRoot), before);
+
+    // Both fields with exactly these values: its own.
+    await writeFile(path.join(vaultRoot, "Projects", "both.md"), "---\nsource: test-agent\nreviewed: false\n---\n# x\n");
+    assert.equal((await callTool(baseUrl, "vault_write", { path: "Projects/both.md", content: "# y\n" })).isError, false);
+  }, token);
+});
+
+test('whole-vault token ("own"): front matter that cannot be read counts as not its own', async () => {
+  await withWholeVault(async ({ baseUrl, vaultRoot, logs }) => {
+    const notes: Record<string, string> = {
+      "invalid-yaml.md": "---\nsource: test-agent\nbroken: [unclosed\n---\n# x\n",
+      "duplicate-key.md": "---\nsource: test-agent\nsource: test-agent\n---\n# x\n",
+      "javascript.md": '---js\n{ source: "test-agent" }\n---\n# x\n',
+      "not-a-mapping.md": "---\n- source: test-agent\n---\n# x\n",
+      "only-in-the-body.md": "# x\n\nsource: test-agent\n",
+    };
+    for (const [name, content] of Object.entries(notes)) await writeFile(path.join(vaultRoot, "Projects", name), content);
+    const before = await snapshot(vaultRoot);
+    for (const name of Object.keys(notes)) {
+      for (const [label, tool, args] of CHANGES.slice(0, 2)) {
+        const result = await callTool(baseUrl, tool, { ...args, path: `Projects/${name}` });
+        assert.equal(result.isError, true, `${name}, ${label}: ${result.text}`);
+      }
+    }
+    assert.equal(logs.filter((l) => l.endsWith("result=denied:foreign-note")).length, Object.keys(notes).length * 2);
+    assert.deepEqual(await snapshot(vaultRoot), before);
+  });
+});
+
+test('whole-vault token ("own"): a refused change counts against writesPerHour', async () => {
+  await withWholeVault(async ({ baseUrl, logs }) => {
+    assert.equal((await callTool(baseUrl, "vault_write", { path: "Home.md", content: "x\n" })).isError, true);
+    const next = await callTool(baseUrl, "vault_write", { path: "Projects/new-note.md", content: "x\n" });
+    assert.equal(next.isError, true, next.text);
+    assert.deepEqual(
+      logs.filter((l) => l.startsWith("scoped token=")).map((l) => l.split(" result=")[1]),
+      ["denied:foreign-note", "denied:write-limit"],
+    );
+  }, wholeVaultToken({ writesPerHour: 1 }));
+});
+
+test('whole-vault token ("own"): a note over 2 MB is refused before it is read, also its own', async () => {
+  await withWholeVault(async ({ baseUrl, vaultRoot, logs }) => {
+    // The same ceiling as for vault_read: the check never loads more than that.
+    const big = `${OWN_NOTE}${"x".repeat(2 * 1024 * 1024)}\n`;
+    await writeFile(path.join(vaultRoot, "Projects", "big.md"), big);
+    for (const [label, tool, args] of CHANGES.slice(0, 2)) {
+      const result = await callTool(baseUrl, tool, { ...args, path: "Projects/big.md" });
+      assert.equal(result.isError, true, label);
+      assert.match(result.text, /^Note too large to change with this token \(more than 2 MB\)/, label);
+    }
+    assert.equal(logs.filter((l) => l.endsWith("result=denied:too-large")).length, 2);
+    assert.equal(await readFile(path.join(vaultRoot, "Projects", "big.md"), "utf-8"), big);
+  });
+});
+
+test('whole-vault token ("own"): a symlink to its own note is still refused as a symlink', async (t) => {
+  await withWholeVault(async ({ baseUrl, vaultRoot, logs }) => {
+    await writeFile(path.join(vaultRoot, "Projects", "own.md"), OWN_NOTE);
+    try {
+      await symlink("own.md", path.join(vaultRoot, "Projects", "link.md"));
+      await symlink(path.join("..", "Home.md"), path.join(vaultRoot, "Projects", "home-link.md"));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EPERM") {
+        t.skip("creating symlinks needs extra rights on this system (the server's Linux allows it)");
+        return;
+      }
+      throw error;
+    }
+    const before = await snapshot(vaultRoot);
+    for (const linkPath of ["Projects/link.md", "Projects/home-link.md"]) {
+      for (const [label, tool, args] of CHANGES.slice(0, 2)) {
+        const result = await callTool(baseUrl, tool, { ...args, path: linkPath });
+        assert.equal(result.isError, true, `${linkPath}, ${label}: ${result.text}`);
+      }
+    }
+    assert.equal(logs.filter((l) => l.endsWith("result=denied:symlink")).length, 4);
+    assert.deepEqual(await snapshot(vaultRoot), before);
+  });
+});
+
+test('one write folder with modifyExisting "own": a note someone else put there is not the token\'s', async () => {
+  const token = makeScopedToken({ modifyExisting: "own" });
+  await withScopedServer([token], async ({ baseUrl, vaultRoot, logs }) => {
+    await mkdir(path.join(vaultRoot, WRITE_DIR), { recursive: true });
+    await writeFile(path.join(vaultRoot, WRITE_DIR, "task.md"), "# task from the PC\n");
+    const result = await callTool(baseUrl, "vault_write", { path: `${WRITE_DIR}/task.md`, content: "# done\n" });
+    assert.equal(result.isError, true, result.text);
+    assert.ok(logs.some((l) => l.endsWith("result=denied:foreign-note")));
+    assert.equal(await readFile(path.join(vaultRoot, WRITE_DIR, "task.md"), "utf-8"), "# task from the PC\n");
+    // Its own notes in that folder stay changeable.
+    assert.equal((await callTool(baseUrl, "vault_write", { path: `${WRITE_DIR}/mine.md`, content: "a\n" })).isError, false);
+    assert.equal((await callTool(baseUrl, "vault_write", { path: `${WRITE_DIR}/mine.md`, content: "b\n" })).isError, false);
+  });
+  // The default for one folder ("any"): as before, the same note can be changed.
+  await withScopedServer([makeScopedToken()], async ({ baseUrl, vaultRoot }) => {
+    await mkdir(path.join(vaultRoot, WRITE_DIR), { recursive: true });
+    await writeFile(path.join(vaultRoot, WRITE_DIR, "task.md"), "# task from the PC\n");
+    assert.equal((await callTool(baseUrl, "vault_write", { path: `${WRITE_DIR}/task.md`, content: "# done\n" })).isError, false);
+  });
+});
+
+test('whole-vault token ("own"): the check and the write hold the git lock, so a pull cannot slip in between', async () => {
+  await withWholeVault(async ({ baseUrl, vaultRoot, logs }) => {
+    const note = path.join(vaultRoot, "Projects", "own.md");
+    const takenOver = "# taken over on another device\n";
+    for (const [label, tool, args] of CHANGES.slice(0, 2)) {
+      await writeFile(note, OWN_NOTE);
+      // Stands in for a pull that brings in another device's version of the note, which no longer
+      // carries the token's front matter: it holds the git lock while it changes the file.
+      let release!: () => void;
+      const pull = withGitLock(() => new Promise<void>((resolve) => (release = resolve)));
+      const change = callTool(baseUrl, tool, { ...args, path: "Projects/own.md" });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      await writeFile(note, takenOver);
+      release();
+      await pull;
+      const result = await change;
+      assert.equal(result.isError, true, `${label}: ${result.text}`);
+      assert.equal(await readFile(note, "utf-8"), takenOver, label);
+    }
+    assert.equal(logs.filter((l) => l.endsWith("result=denied:foreign-note")).length, 2);
+  });
+});
+
+test('whole-vault token ("own"): a conflict copy never replaces a note the token did not write', async () => {
+  await withGitFixture(async (vaultRoot, otherClone) => {
+    await mkdir(path.join(otherClone, "Projects"), { recursive: true });
+    await writeFile(path.join(otherClone, "Projects", "note.md"), "---\nsource: test-agent\n---\nfirst\n");
+    await gitIn(otherClone, ["add", "."]);
+    await gitIn(otherClone, ["commit", "-m", "add note"]);
+    await gitIn(otherClone, ["push", "origin", "main"]);
+
+    await withScopedServer(
+      [wholeVaultToken()],
+      async ({ baseUrl }) => {
+        assert.equal((await callTool(baseUrl, "vault_read", { path: "Projects/note.md" })).isError, false);
+        await writeFile(path.join(otherClone, "Projects", "note.md"), "---\nsource: test-agent\n---\nedited on another device\n");
+        await gitIn(otherClone, ["commit", "-am", "other device edits"]);
+        await gitIn(otherClone, ["push", "origin", "main"]);
+
+        // Notes of another writer under every name the copy could get in the next half minute.
+        const planted: string[] = [];
+        for (let second = -2; second < 30; second++) {
+          const stamp = new Date(Date.now() + second * 1000).toISOString().replace(/[-:T]/g, "").slice(0, 14);
+          const name = path.join(vaultRoot, "Projects", `note-conflict-${stamp}.md`);
+          await writeFile(name, "# someone else's note\n");
+          planted.push(name);
+        }
+
+        const result = await callTool(baseUrl, "vault_write", { path: "Projects/note.md", content: "mine\n" });
+        const sync = JSON.parse(result.text) as { conflict?: boolean; conflictPath?: string };
+        assert.equal(sync.conflict, true, result.text);
+        assert.equal(sync.conflictPath, undefined, result.text);
+        for (const name of planted) assert.equal(await readFile(name, "utf-8"), "# someone else's note\n");
+      },
+      { vaultRoot },
+    );
+  });
+});
+
+test("main listener: TOKEN_INTERNAL still changes every note, also one the scoped token may not change", async () => {
+  await withTestServer(async (mainUrl, config) => {
+    await seed(config.VAULT_PATH);
+    await withScopedServer(
+      [wholeVaultToken()],
+      async ({ baseUrl }) => {
+        assert.equal((await callTool(baseUrl, "vault_write", { path: "Home.md", content: "# scoped\n" })).isError, true);
+
+        const call = async (name: string, args: Record<string, unknown>) => {
+          const res = await mcpRequest(mainUrl, config.TOKEN_INTERNAL, "tools/call", { name, arguments: args }, {
+            "X-Forwarded-For": "100.64.0.10",
+          });
+          return (res.body as { result: { isError?: boolean; content: { text: string }[] } }).result;
+        };
+        const write = await call("vault_write", { path: "Home.md", content: "# Home, rewritten\n" });
+        assert.equal(write.isError, undefined, write.content[0].text);
+        const patch = await call("vault_patch", {
+          ...patchDefaults,
+          path: "Projects/plan.md",
+          targetType: "heading",
+          target: "Status",
+          operation: "replace",
+          content: "from the main port",
+        });
+        assert.equal(patch.isError, undefined, patch.content[0].text);
+        // Unchanged rules there: no scoped marks, no ownership check.
+        assert.equal(await readFile(path.join(config.VAULT_PATH, "Home.md"), "utf-8"), "# Home, rewritten\n");
+        const plan = await readFile(path.join(config.VAULT_PATH, "Projects", "plan.md"), "utf-8");
+        assert.match(plan, /## Status\nfrom the main port/);
+        assert.doesNotMatch(plan, /test-agent/);
+      },
+      { vaultRoot: config.VAULT_PATH },
+    );
   });
 });
 
@@ -277,10 +579,11 @@ test("whole-vault token: an existing note whose name is not portable stays unwri
 
 // --- conflict copies ---
 
-test("whole-vault token: a conflict on a note with a free-form name is quarantined under a plain name", async () => {
+test("whole-vault token: a conflict on its own note with a free-form name is quarantined under a plain name", async () => {
   await withGitFixture(async (vaultRoot, otherClone) => {
     await mkdir(path.join(otherClone, "Projects"), { recursive: true });
-    await writeFile(path.join(otherClone, "Projects", "My Note.md"), "first\n");
+    // The token's own note (it carries its front matter), so "own" lets the token change it.
+    await writeFile(path.join(otherClone, "Projects", "My Note.md"), "---\nsource: test-agent\n---\nfirst\n");
     await gitIn(otherClone, ["add", "."]);
     await gitIn(otherClone, ["commit", "-m", "add note"]);
     await gitIn(otherClone, ["push", "origin", "main"]);
@@ -292,7 +595,7 @@ test("whole-vault token: a conflict on a note with a free-form name is quarantin
         // The read pulls the note in, so the write below overwrites a note the other device then edits.
         assert.equal((await callTool(baseUrl, "vault_read", { path: notePath })).isError, false);
 
-        await writeFile(path.join(otherClone, "Projects", "My Note.md"), "edited on another device\n");
+        await writeFile(path.join(otherClone, "Projects", "My Note.md"), "---\nsource: test-agent\n---\nedited on another device\n");
         await gitIn(otherClone, ["commit", "-am", "other device edits"]);
         await gitIn(otherClone, ["push", "origin", "main"]);
 

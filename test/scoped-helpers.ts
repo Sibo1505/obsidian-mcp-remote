@@ -13,7 +13,10 @@ export const SCOPED_SECRET = "scoped-test-secret-not-real-0000000001";
 export const OTHER_SCOPED_SECRET = "scoped-test-secret-not-real-0000000002";
 export const WRITE_DIR = "notes-inbox";
 
-/** A scoped token that is valid for requests from this machine's loopback address. */
+/**
+ * A scoped token that is valid for requests from this machine's loopback address. Like the config,
+ * it changes only its own existing notes with the whole vault ("own") and any note in one folder.
+ */
 export function makeScopedToken(overrides: Partial<ScopedToken> = {}): ScopedToken {
   return {
     name: "test-agent",
@@ -26,6 +29,7 @@ export function makeScopedToken(overrides: Partial<ScopedToken> = {}): ScopedTok
     writesPerHour: 60,
     frontmatter: { source: "test-agent" },
     tags: ["scoped"],
+    modifyExisting: (overrides.writeDir ?? WRITE_DIR) === "" ? "own" : "any",
     ...overrides,
   };
 }
