@@ -24,6 +24,12 @@ export interface ScopedToken {
   writesPerHour: number;
   frontmatter: Record<string, string | number | boolean>;
   tags: string[];
+  /**
+   * Which existing notes the token may change. "own": only notes that carry every one of its
+   * `frontmatter` fields with exactly that value (notes it wrote); "any": every writable note. New
+   * notes are not affected. Default "own" with the whole vault, "any" with one write folder.
+   */
+  modifyExisting: "own" | "any";
 }
 
 export type ScopedSetup =
@@ -117,6 +123,7 @@ const tokenEntrySchema = z
       .refine((fields) => !("tags" in fields), 'set tags with the "tags" field, not in "frontmatter"')
       .default({}),
     tags: z.array(z.string().regex(/^[A-Za-z0-9_/-]+$/, "tags: letters, digits, _, - and /")).default([]),
+    modifyExisting: z.enum(["own", "any"]).optional(),
   })
   .strict();
 
@@ -195,6 +202,17 @@ export function loadScopedConfig(env: NodeJS.ProcessEnv, mainConfig: Config): Sc
       });
     }
 
+    // With the whole vault writable, a token changes only the notes it wrote unless the config says
+    // otherwise. It recognizes them by its front matter fields, so "own" needs at least one.
+    const modifyExisting = entry.modifyExisting ?? (entry.writeDir === "" ? "own" : "any");
+    if (modifyExisting === "own" && Object.keys(entry.frontmatter).length === 0) {
+      const byDefault = entry.modifyExisting === undefined ? ' (the default for writeDir "/")' : "";
+      errors.push(
+        `${where}.modifyExisting: "own" needs at least one field in "frontmatter"${byDefault} to recognize the ` +
+          `notes this token wrote; add one, or set modifyExisting to "any"`,
+      );
+    }
+
     const secret = env[entry.tokenEnv];
     if (secret === undefined || secret === "") {
       errors.push(`${where}.tokenEnv: environment variable ${entry.tokenEnv} is not set`);
@@ -225,6 +243,7 @@ export function loadScopedConfig(env: NodeJS.ProcessEnv, mainConfig: Config): Sc
       writesPerHour: entry.writesPerHour,
       frontmatter: entry.frontmatter,
       tags: entry.tags,
+      modifyExisting,
     });
   });
 

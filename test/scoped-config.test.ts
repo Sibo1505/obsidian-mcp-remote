@@ -54,6 +54,8 @@ test("a valid scoped token config is parsed, with defaults for the optional fiel
   assert.equal(token.writesPerHour, 60);
   assert.deepEqual(token.frontmatter, {});
   assert.deepEqual(token.tags, []);
+  // One write folder: the token may change any note in it, as before.
+  assert.equal(token.modifyExisting, "any");
 });
 
 test('writeDir "/" opens the whole vault; writeDeny is normalized and every readDeny entry is write-denied too', () => {
@@ -64,6 +66,7 @@ test('writeDir "/" opens the whole vault; writeDeny is normalized and every read
         writeDeny: ["resources/agent-config/", "./.claude", "private"],
         // With the whole vault writable, readDeny cannot overlap a write folder: no error.
         readDeny: ["private/", "projects/secret-plan.md"],
+        frontmatter: { source: "test-agent" },
       }),
     ]),
     mainConfig,
@@ -74,6 +77,24 @@ test('writeDir "/" opens the whole vault; writeDeny is normalized and every read
   assert.equal(token.writeDir, "");
   assert.deepEqual(token.readDeny, ["private", "projects/secret-plan.md"]);
   assert.deepEqual(token.writeDeny, ["resources/agent-config", ".claude", "private", "projects/secret-plan.md"]);
+  // The whole vault: existing notes only when they carry the token's front matter.
+  assert.equal(token.modifyExisting, "own");
+});
+
+test('modifyExisting: "own" by default for the whole vault, "any" for one folder, and either can be set', () => {
+  const cases: [entry: Record<string, unknown>, expected: string][] = [
+    [{ writeDir: "/", frontmatter: { source: "a" } }, "own"],
+    [{ writeDir: "/", modifyExisting: "any" }, "any"],
+    [{ writeDir: "/", frontmatter: { source: "a" }, modifyExisting: "own" }, "own"],
+    [{}, "any"],
+    [{ frontmatter: { source: "a" }, modifyExisting: "own" }, "own"],
+  ];
+  for (const [entry, expected] of cases) {
+    const setup = loadScopedConfig(envWith([tokenEntry(entry)]), mainConfig);
+    assert.equal(setup.status, "enabled", `${JSON.stringify(entry)}: ${JSON.stringify(setup)}`);
+    if (setup.status !== "enabled") return;
+    assert.equal(setup.tokens[0].modifyExisting, expected, JSON.stringify(entry));
+  }
 });
 
 test("with one write folder, readDeny entries are write-denied as well and writeDeny defaults to empty", () => {
@@ -269,6 +290,27 @@ const invalidCases: { name: string; env: NodeJS.ProcessEnv; field: string }[] = 
     field: `${T}.frontmatter.source:`,
   },
   { name: "tag with a space", env: envWith([tokenEntry({ tags: ["two words"] })]), field: `${T}.tags[0]:` },
+  // "own" recognizes the token's notes by its front matter fields: without one it has nothing to go by.
+  {
+    name: 'whole vault ("own" by default) without a front matter field',
+    env: envWith([tokenEntry({ writeDir: "/" })]),
+    field: `${T}.modifyExisting: "own" needs at least one field in "frontmatter"`,
+  },
+  {
+    name: 'whole vault ("own" by default) with tags but no front matter field',
+    env: envWith([tokenEntry({ writeDir: "/", tags: ["agent"] })]),
+    field: `${T}.modifyExisting: "own" needs at least one field in "frontmatter"`,
+  },
+  {
+    name: 'one write folder with "own" and no front matter field',
+    env: envWith([tokenEntry({ modifyExisting: "own" })]),
+    field: `${T}.modifyExisting: "own" needs at least one field in "frontmatter"`,
+  },
+  {
+    name: "modifyExisting is neither own nor any",
+    env: envWith([tokenEntry({ writeDir: "/", frontmatter: { source: "a" }, modifyExisting: "mine" })]),
+    field: `${T}.modifyExisting:`,
+  },
 ];
 
 for (const { name, env, field } of invalidCases) {
@@ -362,6 +404,27 @@ test("a valid scoped config starts a second listener next to the main one", asyn
   } finally {
     await new Promise((resolve) => servers.main.close(resolve));
     await new Promise((resolve) => servers.scoped!.close(resolve));
+    await rm(vaultRoot, { recursive: true, force: true });
+  }
+});
+
+test('"own" without a front matter field stops only the scoped listener; the main listener keeps running', async () => {
+  const vaultRoot = await mkdtemp(path.join(tmpdir(), "start-vault-"));
+  const lines: string[] = [];
+  const log = { info: (line: string) => lines.push(line), error: (line: string) => lines.push(line) };
+  const servers = await startServers(
+    makeTestConfig(vaultRoot),
+    envWith([tokenEntry({ writeDir: "/" })], { SCOPED_PORT: "0" }),
+    log,
+  );
+  try {
+    assert.equal(servers.scoped, undefined);
+    const port = (servers.main.address() as AddressInfo).port;
+    assert.equal((await fetch(`http://127.0.0.1:${port}/health`)).status, 200);
+    assert.ok(lines.some((line) => /scoped listener not started/i.test(line) && /modifyExisting/.test(line)), JSON.stringify(lines));
+  } finally {
+    await new Promise((resolve) => servers.main.close(resolve));
+    if (servers.scoped) await new Promise((resolve) => servers.scoped!.close(resolve));
     await rm(vaultRoot, { recursive: true, force: true });
   }
 });

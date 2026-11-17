@@ -1,3 +1,4 @@
+import { lstat } from "node:fs/promises";
 import path from "node:path";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
@@ -9,7 +10,7 @@ import { vaultListSchema } from "../tools/vault-list.js";
 import { searchQuerySchema } from "../tools/search-query.js";
 import { hasBlockedSegment, listDir, resolveInVault, statNote } from "../vault/fs.js";
 import { SCOPED_SEARCH_LIMITS, SearchLimitError } from "../vault/search.js";
-import { commitAndPush, type CommitOptions } from "../vault/git.js";
+import { commitAndPushLocked, withGitLock, type CommitOptions } from "../vault/git.js";
 import type { ScopedToken } from "./config.js";
 import {
   MAX_DEPTH_BELOW_WRITE_DIR,
@@ -19,8 +20,8 @@ import {
   MAX_SEGMENT_LENGTH,
   toSafeStem,
 } from "./names.js";
-import { checkFrontmatterSize, checkFrontmatterValue, enforceFrontmatter, type WriteBudget } from "./enforce.js";
-import { parseFrontmatter } from "../vault/frontmatter.js";
+import { checkFrontmatterSize, checkFrontmatterValue, enforceFrontmatter, isOwnNote, type WriteBudget } from "./enforce.js";
+import { parseFrontmatter, type ParsedNote } from "../vault/frontmatter.js";
 import { MAX_OUTPUT_BYTES, exceedsOutputBudget } from "./budget.js";
 import type { ScopedSearch } from "./search-runner.js";
 import {
@@ -116,6 +117,45 @@ function consumeWrite(ctx: ScopedToolContext): void {
   }
 }
 
+/** Reads a note a scoped request is about to change: never through a symlink, at most 2 MB. */
+async function readForChange(target: string, notePath: string): Promise<string> {
+  if ((await lstat(target)).size > MAX_OUTPUT_BYTES) {
+    throw new ScopedDenied("too-large", `Note too large to change with this token (more than ${MEGABYTES} MB): ${notePath}`);
+  }
+  return readFileNoFollow(target);
+}
+
+const OWN_RULE = "Existing notes this token did not write cannot be changed; create a new note and link to it instead.";
+
+/**
+ * With modifyExisting "own", an existing note may only be changed when it carries all of the
+ * token's front matter fields with exactly their values (see isOwnNote). Anything else belongs to
+ * someone else: no front matter, other values, front matter that cannot be read. Once a person
+ * removes the marks, the note is theirs and the token can no longer change it.
+ */
+function checkOwnNote(ctx: ScopedToolContext, note: ParsedNote, notePath: string): void {
+  if (ctx.token.modifyExisting === "own" && !isOwnNote(note, ctx.token.frontmatter)) {
+    throw new ScopedDenied(
+      "foreign-note",
+      `Write rejected for ${JSON.stringify(notePath)}: an existing note this token did not write; ` +
+        `create a new note and link to it instead`,
+    );
+  }
+}
+
+/** checkOwnNote for a path that may not exist yet: a new note is always fine. */
+async function checkOwnIfExists(ctx: ScopedToolContext, target: string, notePath: string): Promise<void> {
+  if (ctx.token.modifyExisting !== "own") return;
+  let existing: string;
+  try {
+    existing = await readForChange(target, notePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  checkOwnNote(ctx, parseFrontmatter(existing, notePath), notePath);
+}
+
 /** `20261115203001` for 2026-11-15 20:30:01 UTC. */
 function compactUtcStamp(date = new Date()): string {
   return date.toISOString().replace(/[-:T]/g, "").slice(0, 14);
@@ -142,6 +182,8 @@ function commitOptions(ctx: ScopedToolContext): CommitOptions {
       const conflictPath = [...parts, `${stem}${suffix}`].join("/");
       const inner = checkWritePath(writeDir, writeDeny, conflictPath, MAX_PATH_LENGTH);
       const target = await resolveWriteTarget(ctx.config.VAULT_PATH, writeDir, inner, { createDirs: true });
+      // A copy that would land on an existing note follows the same rule as any other change.
+      await checkOwnIfExists(ctx, target, conflictPath);
       await writeFileNoFollow(target, ourContent);
       return conflictPath;
     },
@@ -161,16 +203,17 @@ export function registerScopedTools(server: McpServer, ctx: ScopedToolContext): 
   const vault = ctx.config.VAULT_PATH;
   const { writeDir, writeDeny, readDeny } = ctx.token;
   const newNames = `new folders and notes need names of lowercase letters, digits and "-" (notes ending in .md)`;
+  const ownRule = ctx.token.modifyExisting === "own" ? ` ${OWN_RULE}` : "";
   const writeRules =
     writeDir === ""
       ? // The deny lists stay out of the description: they would tell every client which notes
         // matter most. A denied write says so when it happens ("not writable with this token").
         `This token can write Markdown notes anywhere in the vault except hidden folders, agent instruction ` +
-        `files and paths this token may not write. Existing notes keep ` +
+        `files and paths this token may not write.${ownRule} Existing notes keep ` +
         `their names; ${newNames}; at most ${MAX_DEPTH_WHOLE_VAULT} path parts and ${MAX_NEW_FOLDERS} new ` +
         `folders per write, at most ${MAX_NOTE_BYTES / 1024} KB.`
       : `This token can only write Markdown notes below ${writeDir}/: ${newNames}, ` +
-        `at most ${MAX_DEPTH_BELOW_WRITE_DIR} levels, at most ${MAX_NOTE_BYTES / 1024} KB.`;
+        `at most ${MAX_DEPTH_BELOW_WRITE_DIR} levels, at most ${MAX_NOTE_BYTES / 1024} KB.${ownRule}`;
 
   server.registerTool(
     "vault_read",
@@ -199,9 +242,14 @@ export function registerScopedTools(server: McpServer, ctx: ScopedToolContext): 
         consumeWrite(ctx);
         const output = enforce(ctx, input.content, input.path);
         checkNoteSize(output);
-        const target = await resolveWriteTarget(vault, writeDir, inner, { createDirs: true });
-        await writeFileNoFollow(target, output);
-        const sync = await commitAndPush(vault, input.path, `${ctx.token.name}: vault_write ${input.path}`, commitOptions(ctx));
+        // From the look at the note on disk to the commit under the git lock: no pull can bring in
+        // another device's version of the note between the check and the write.
+        const sync = await withGitLock(async () => {
+          const target = await resolveWriteTarget(vault, writeDir, inner, { createDirs: true });
+          await checkOwnIfExists(ctx, target, input.path);
+          await writeFileNoFollow(target, output);
+          return commitAndPushLocked(vault, input.path, `${ctx.token.name}: vault_write ${input.path}`, commitOptions(ctx));
+        });
         return { path: input.path, written: true, ...sync };
       }),
   );
@@ -212,20 +260,25 @@ export function registerScopedTools(server: McpServer, ctx: ScopedToolContext): 
     (input) =>
       audited(ctx, "vault_patch", input.path, async () => {
         const inner = checkWritePath(writeDir, writeDeny, input.path);
-        const target = await resolveWriteTarget(vault, writeDir, inner, { createDirs: false });
-        const current = await readFileNoFollow(target);
-        consumeWrite(ctx);
-        // Patching writes the note's front matter back out, so check its size before that happens:
-        // the note may come from another writer.
-        checkFrontmatterSize(parseFrontmatter(current, input.path).data);
-        // A front matter patch writes its value out too: same budget, checked before that happens.
-        if (input.targetType === "frontmatter") checkFrontmatterValue(parseContentValue(input));
-        const patched = applyPatch(current, input);
-        checkNoteSize(patched);
-        const output = enforce(ctx, patched, input.path);
-        checkNoteSize(output);
-        await writeFileNoFollow(target, output);
-        const sync = await commitAndPush(vault, input.path, `${ctx.token.name}: vault_patch ${input.path}`, commitOptions(ctx));
+        // Read, check, patch, write and commit under the git lock (see vault_write).
+        const sync = await withGitLock(async () => {
+          const target = await resolveWriteTarget(vault, writeDir, inner, { createDirs: false });
+          const current = await readForChange(target, input.path);
+          consumeWrite(ctx);
+          const note = parseFrontmatter(current, input.path);
+          checkOwnNote(ctx, note, input.path);
+          // Patching writes the note's front matter back out, so check its size before that happens:
+          // the note may come from another writer.
+          checkFrontmatterSize(note.data);
+          // A front matter patch writes its value out too: same budget, checked before that happens.
+          if (input.targetType === "frontmatter") checkFrontmatterValue(parseContentValue(input));
+          const patched = applyPatch(current, input);
+          checkNoteSize(patched);
+          const output = enforce(ctx, patched, input.path);
+          checkNoteSize(output);
+          await writeFileNoFollow(target, output);
+          return commitAndPushLocked(vault, input.path, `${ctx.token.name}: vault_patch ${input.path}`, commitOptions(ctx));
+        });
         return { path: input.path, patched: true, ...sync };
       }),
   );
