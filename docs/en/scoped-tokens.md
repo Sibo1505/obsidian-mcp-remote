@@ -3,8 +3,9 @@
 Optional. A scoped token lets an agent on another machine in your tailnet **read the vault and
 write either to exactly one folder, or anywhere except the paths you deny**. Typical cases: an agent
 on a server reads your notes and rules and files its own notes in an inbox folder, without being
-able to change anything else (`writeDir: "notes-inbox"`); or it may put notes where they belong,
-but never touch agent configuration or your rule notes (`writeDir: "/"` with `writeDeny`).
+able to change anything else (`writeDir: "notes-inbox"`); or it may put new notes where they
+belong and change only the notes it wrote, but never touch agent configuration or your rule notes
+(`writeDir: "/"` with `writeDeny`).
 
 Scoped tokens use their **own listener on their own port**. The main listener (`PORT`, OAuth and
 `TOKEN_INTERNAL`) stays exactly as it is.
@@ -73,6 +74,17 @@ Scoped tokens use their **own listener on their own port**. The main listener (`
   - no symlink anywhere on the way from the vault root to the note, and the note itself must not be
     a symlink or have other hard links. The resolved folder must lie inside
     `realpath(vault/writeDir)`;
+  - **only its own existing notes** with `modifyExisting: "own"`, the default for `writeDir: "/"`.
+    With the whole vault writable, a token creates notes anywhere but changes only notes that carry
+    its own front matter. Set `modifyExisting: "any"` to allow more. A note is the token's own when
+    it carries every one of the token's `frontmatter` fields with exactly that value and type
+    (`false` is not `"false"`). A note without front matter, with other values, or with front
+    matter that is not valid YAML belongs to someone else: `vault_write` and every `vault_patch`
+    refuse it (`denied:foreign-note`) and ask the client to create a new note and link to it.
+    The server reads the existing note without following a symlink and only up to 2 MB, and the
+    check, the write and the commit run under one lock, so no pull can bring in another version of
+    the note in between. Once a person removes the token's fields from a note, the note is theirs
+    and the token can no longer change it;
   - at most 200 KB (UTF-8) per note; for `vault_patch` this is checked on the result;
   - no front matter that reuses a list or mapping through a YAML alias (`*name`), and none with
     more than 10 000 values or about 2 MB once written out (one long text reused through an alias
@@ -84,12 +96,15 @@ Scoped tokens use their **own listener on their own port**. The main listener (`
     its path passes the checks on the text (write folder, deny lists, the names of every part,
     length) and the note passes the size limit; a `vault_patch` counts once the note is found and
     read. Every refusal after that point counts too: a new name that is not plain, a case twin, a
-    symlink on the way, the front matter, a missing heading, the size of the patched note.
+    symlink on the way, an existing note the token did not write, the front matter, a missing
+    heading, the size of the patched note.
 - **Marked notes.** After every scoped write, the server sets the token's `frontmatter` fields and
-  adds its `tags` in the final note, even when a write or patch tried to remove them.
+  adds its `tags` in the final note, even when a write or patch tried to remove them. With
+  `modifyExisting: "own"` these fields also decide which existing notes the token may change later.
 - **Conflicts.** If someone else changed the same note at the same time, the server keeps the
-  token's version as `<name>-conflict-<yyyymmddhhmmss>.md` next to it, under the same rules. The
-  name is reduced to a plain one first (`My Idea.md` → `my-idea-conflict-….md`).
+  token's version as `<name>-conflict-<yyyymmddhhmmss>.md` next to it, under the same rules: with
+  `modifyExisting: "own"` a copy never replaces a note the token did not write. The name is reduced
+  to a plain one first (`My Idea.md` → `my-idea-conflict-….md`).
 - **Traceable.** The commit message starts with `<name>: vault_write <path>`,
   `<name>: vault_patch <path>` or `<name>: conflict quarantined <path>`. Every request writes one
   log line, never content or the token. A tool call that is refused before its tool runs (invalid
@@ -132,9 +147,10 @@ Fields per token (unknown fields are an error, so a typo cannot silently drop a 
 | `writeDeny` | no | Path prefixes (folders or files) the token cannot write, like `readDeny`. Default: empty. Mainly for `writeDir: "/"`: list what the vault's devices treat as rules or configuration. The tool descriptions never list these entries; a denied write says so when it happens. |
 | `readDeny` | no | Path prefixes (folders or files) the token cannot read: an entry covers itself, everything below it and its namesake (`x.md` and `x/`), compared without regard to case. Default: empty, so everything is readable. Every entry is write-denied as well. With one write folder, an entry that overlaps `writeDir` (covers it, lies inside it, or is its parent) is an error. |
 | `expiresAt` | yes | ISO date (`2026-12-31`, meaning 00:00 UTC) or date-time with offset (`2026-12-31T23:59:00Z`). After that: 401 and a log line. |
-| `writesPerHour` | no | Default 60. Counts write attempts, also refused ones, from the point described above. |
-| `frontmatter` | no | Fields the server sets on every note it writes for this token (strings, numbers, booleans; not `tags`). |
+| `writesPerHour` | no | Default 60. Counts write attempts, also refused ones, from the point described above. With `writeDir: "/"`, set it well below the default, to what the agent really needs: it caps how many notes a misled agent can write in an hour. |
+| `frontmatter` | no | Fields the server sets on every note it writes for this token (strings, numbers, booleans; not `tags`). With `modifyExisting: "own"` they also mark the notes the token may change. |
 | `tags` | no | Tags the server adds to every note it writes for this token. |
+| `modifyExisting` | no | `"own"`: change only existing notes that carry every `frontmatter` field of this token with exactly that value; `"any"`: every writable note. Default `"own"` with `writeDir: "/"`, `"any"` with one write folder. `"own"` needs at least one `frontmatter` field, otherwise the scoped listener does not start. New notes are allowed either way. |
 
 Example (`.env`; the single quotes keep the JSON in one piece):
 
@@ -150,6 +166,9 @@ The same token for the whole vault, keeping it out of a rules folder and one not
 SCOPED_TOKENS_JSON='[{"name":"agent","tokenEnv":"TOKEN_AGENT","allowFrom":["100.64.0.10"],"writeDir":"/","writeDeny":["rules/","projects/house-rules.md"],"readDeny":["private/"],"expiresAt":"2026-12-31","frontmatter":{"source":"agent"},"tags":["agent"]}]'
 ```
 
+It changes only the existing notes it wrote (`modifyExisting` defaults to `"own"`, recognized by
+`"source":"agent"`).
+
 and pass them into the container (`docker-compose.yml` already passes `SCOPED_PORT`, `SCOPED_HOST`
 and `SCOPED_TOKENS_JSON`; add your secret variable next to them). With the Tailscale sidecar the
 container is reachable on its tailnet address, so **do not** add a `ports:` mapping for the scoped
@@ -157,6 +176,49 @@ port.
 
 On the agent machine, send the secret as `Authorization: Bearer <secret>` to
 `http://<server tailnet address>:3001/mcp`.
+
+## What to deny
+
+With `writeDir: "/"`, the deny lists decide what an agent cannot reach. "Only its own notes" keeps
+it from changing your existing notes, but it can still put a *new* note into any folder that is not
+denied, and whoever reads that folder later sees it. Put these into `writeDeny` (or `readDeny`,
+which denies writing as well):
+
+- folders whose notes agents read as rules or briefings: instructions kept as notes, a folder an
+  agent works off as tasks, an inbox another agent processes;
+- folders with templates: a template is copied into new notes, so its text spreads;
+- knowledge bases of skills or tools: reference notes an agent loads before it acts;
+- project plans and decision logs that people or agents follow;
+- every note or folder from which an agent takes commands, settings or code.
+
+Reading a note by section (`vault_read` with `targetType: "heading"`) returns only that section,
+not the note's front matter. A reader that reads only a section therefore does not see the marks
+that tell a scoped token's note from yours. Agents that read sections of notes a scoped token could
+have written should read the marking field first (`targetType: "frontmatter"`, `target: "source"`).
+
+At start, the server logs every deny entry that matches nothing in the vault, for example
+`Scoped token "agent": writeDeny entry "rule" matches nothing in the vault (a typo?)`. Such an
+entry protects nothing until that path exists. The line goes to the server log only, never to a
+client.
+
+## Undoing a token's writes
+
+Every write of a scoped token is one commit whose message starts with the token's name. To find
+and undo them in a clone of the vault:
+
+```bash
+# every commit of the token "agent", newest first
+git log --grep '^agent: ' --format='%h %ad %s' --date=iso
+# undo one
+git revert --no-edit <commit>
+# undo everything since a date (newest first, so later changes go first)
+git log --grep '^agent: ' --since=2026-12-01 --format=%H | xargs git revert --no-edit
+git push
+```
+
+Check the list before you undo it: `--grep` matches every commit with a message line that starts
+like that. If a note changed again after the token's commit, `git revert` stops with a conflict for
+that note; resolve it, then run `git revert --continue`.
 
 ## Network rules
 
@@ -201,9 +263,11 @@ The token check is one layer; the network should be the other:
   note is read and written as plain text.
 - **Writing the whole vault is a deny list.** With `writeDir: "/"`, a new folder is writable until
   you list it. The name rules keep agent configuration out (dot folders, `claude*`, `agents*`, ...),
-  but not notes that people or agents on other devices *treat* as rules (a "house rules" note, a
-  project's decision log). Put those in `writeDeny`. Existing notes the token edits get its
-  `frontmatter` and `tags`, so you can see afterwards which notes it touched.
+  and "only its own notes" keeps your existing notes as they are, but a new note can still land in
+  a folder that people or agents on other devices *treat* as rules (a "house rules" folder, a
+  project's decision log). Put those in `writeDeny` (see [What to deny](#what-to-deny)). Every note
+  the token writes gets its `frontmatter` and `tags`, so you can see afterwards which notes are
+  its own.
 - **Only plain new names.** Folders and notes a scoped token creates use lowercase ASCII letters,
   digits and `-` only: no spaces, capitals or umlauts. Existing names stay as they are.
 - **The secret lives on the agent machine.** It only works on the scoped port, from the listed
