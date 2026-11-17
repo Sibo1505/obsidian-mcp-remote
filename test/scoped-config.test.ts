@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { AddressInfo } from "node:net";
@@ -425,6 +425,36 @@ test('"own" without a front matter field stops only the scoped listener; the mai
   } finally {
     await new Promise((resolve) => servers.main.close(resolve));
     if (servers.scoped) await new Promise((resolve) => servers.scoped!.close(resolve));
+    await rm(vaultRoot, { recursive: true, force: true });
+  }
+});
+
+test("at start, a deny entry that matches nothing in the vault gets a log line (a typo would protect nothing)", async () => {
+  const vaultRoot = await mkdtemp(path.join(tmpdir(), "start-vault-"));
+  for (const relative of ["rules/house.md", "projects/plan.md", "private/old.md"]) {
+    await mkdir(path.dirname(path.join(vaultRoot, relative)), { recursive: true });
+    await writeFile(path.join(vaultRoot, relative), "x\n");
+  }
+  const lines: string[] = [];
+  const log = { info: (line: string) => lines.push(line), error: (line: string) => lines.push(line) };
+  const entry = tokenEntry({
+    writeDir: "/",
+    frontmatter: { source: "test-agent" },
+    // Matched without regard to case and through the namesake ("projects/plan" covers plan.md).
+    writeDeny: ["Rules", "projects/plan", "rule"],
+    readDeny: ["private/old", "privat"],
+  });
+  const servers = await startServers(makeTestConfig(vaultRoot), envWith([entry], { SCOPED_PORT: "0" }), log);
+  try {
+    assert.ok(servers.scoped);
+    const warnings = lines.filter((line) => line.includes("matches nothing in the vault"));
+    assert.deepEqual(warnings, [
+      'Scoped token "test-agent": readDeny entry "privat" matches nothing in the vault (a typo?)',
+      'Scoped token "test-agent": writeDeny entry "rule" matches nothing in the vault (a typo?)',
+    ]);
+  } finally {
+    await new Promise((resolve) => servers.main.close(resolve));
+    await new Promise((resolve) => servers.scoped!.close(resolve));
     await rm(vaultRoot, { recursive: true, force: true });
   }
 });
