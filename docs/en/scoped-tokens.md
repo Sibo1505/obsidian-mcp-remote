@@ -27,17 +27,27 @@ Scoped tokens use their **own listener on their own port**. The main listener (`
   (counted before the token check, separately from the main port).
 - **Reads** see the whole vault except the `readDeny` prefixes. Denied files and folders are hidden
   from `vault_list`, rejected by `vault_read`, and left out of `search_query` (also as backlinks).
+  An entry also covers its namesake: `projects/plan.md` covers the folder `projects/plan/`, and
+  `resources/ops` covers the note `resources/ops.md` (a hub note and its folder belong together).
   Symlinks are resolved first, so a link cannot lead into a denied folder or out of the vault.
   Reads share one `git pull` at most every 10 seconds, so they can be up to 10 seconds behind the
   remote.
 - **Search has a budget.** For a scoped token, `search_query` refuses a query larger than 8 KB,
   deeper than 20 levels or with more than 500 values; a `glob` pattern may have at most 200
   characters and braces match literally (`{a,b}` is not expanded). More than 500 matches, a result
-  larger than 1 MB or more than 5 seconds of evaluation end with an error that asks to narrow the
-  query, never with a silently cut list.
+  larger than 1 MB or more than 5 seconds for reading and evaluating the notes (checked between
+  notes) end with an error that asks to narrow the query, never with a silently cut list.
+- **Search runs in its own thread.** A scoped search runs in a worker thread with a memory ceiling
+  (256 MB) and is stopped after 10 seconds whatever it is doing, also inside a single slow regular
+  expression. Only one scoped search runs at a time; a second one gets an error ("Another search is
+  still running") instead of waiting. The server itself, and with it the main port, keeps answering.
+- **Results have a ceiling.** Every scoped result may have at most about 2 MB as JSON and 100 000
+  values. The server measures that before it builds the answer, counting a YAML alias (`*name`)
+  every time it is used, so a small note whose front matter expands to millions of values is
+  refused instead of being expanded. `vault_read` refuses a file over 2 MB before reading it.
 - **Writes** (`vault_write`, `vault_patch`) are checked by the server, not by the client:
   - only below `writeDir`; with `writeDir: "/"` anywhere in the vault. Never into a `writeDeny` or
-    `readDeny` path (compared without regard to case);
+    `readDeny` path (compared without regard to case, namesakes included as for reads);
   - every part of the path, existing or not: no dot files or dot folders (`.claude/`,
     `.obsidian/`), no characters some OS cannot store (`<>:"|?*`, control characters, a trailing
     space or dot), only `.md` notes, no name starting with one of the known agent instruction names
@@ -53,12 +63,17 @@ Scoped tokens use their **own listener on their own port**. The main listener (`
   - at most 100 characters per name. With one write folder at most 4 path parts below `writeDir`,
     counting folders and the file (`notes-inbox/a/b/c/x.md` is the deepest allowed); with
     `writeDir: "/"` at most 10 path parts and at most 3 new folders per write;
+  - at most 170 characters for the whole vault-relative path, existing folders included. Windows
+    allows 260 characters for a path, the vault folder included, and Git for Windows stops a pull
+    at a longer one. A conflict copy (below) may use up to 200;
   - the path must already be in plain form: no `..` or `.` path part, no `//`, no `\`, no leading `/`;
   - all of this is checked before anything is created: a rejected write leaves no empty folders;
   - no symlink anywhere on the way from the vault root to the note, and the note itself must not be
     a symlink or have other hard links. The resolved folder must lie inside
     `realpath(vault/writeDir)`;
   - at most 200 KB (UTF-8) per note; for `vault_patch` this is checked on the result;
+  - no front matter that reuses a list or mapping through a YAML alias (`*name`): a few hundred
+    bytes of aliases can stand for billions of values for every later reader;
   - at most `writesPerHour` writes per token (sliding hour).
 - **Marked notes.** After every scoped write, the server sets the token's `frontmatter` fields and
   adds its `tags` in the final note, even when a write or patch tried to remove them.
@@ -67,7 +82,9 @@ Scoped tokens use their **own listener on their own port**. The main listener (`
   name is reduced to a plain one first (`My Idea.md` → `my-idea-conflict-….md`).
 - **Traceable.** The commit message starts with `<name>: vault_write <path>`,
   `<name>: vault_patch <path>` or `<name>: conflict quarantined <path>`. Every request writes one
-  log line, never content or the token:
+  log line, never content or the token. A tool call that is refused before its tool runs (invalid
+  arguments, or a client that does not accept the answer's format) gets a `result=rejected` line.
+  Paths longer than 300 characters are cut in the log:
 
   ```text
   scoped token=agent method=tools/list
@@ -75,6 +92,7 @@ Scoped tokens use their **own listener on their own port**. The main listener (`
   scoped token=agent tool=vault_write path="CLAUDE.md" result=denied:outside-write-dir
   scoped token=agent tool=vault_patch path="rules/house-rules.md" result=denied:write-denied
   scoped token=agent tool=vault_read path="missing.md" result=error:ENOENT
+  scoped token=agent method=tools/call tool=vault_write result=rejected
   scoped auth rejected reason=address-not-allowed token=agent from=192.0.2.10
   ```
 
@@ -101,8 +119,8 @@ Fields per token (unknown fields are an error, so a typo cannot silently drop a 
 | `tokenEnv` | yes | Name of the environment variable that holds the secret. Its **value** must differ from the values of `TOKEN_INTERNAL`, `OAUTH_CLIENT_SECRET`, `OAUTH_PASSWORD` and every other token's secret. |
 | `allowFrom` | yes | Exact IP addresses (no ranges, no host names). Stored in canonical form, so `FD7A:115C:A1E0:0:0:0:0:1` and `fd7a:115c:a1e0::1` are the same address. |
 | `writeDir` | yes | The one writable folder, relative to the vault, following the folder name rules above; or exactly `"/"` for the whole vault. An empty value is an error, never "everything". |
-| `writeDeny` | no | Path prefixes (folders or files) the token cannot write, like `readDeny`. Default: empty. Mainly for `writeDir: "/"`: list what the vault's devices treat as rules or configuration. |
-| `readDeny` | no | Path prefixes (folders or files) the token cannot read: an entry covers itself and everything below it, compared without regard to case. Default: empty, so everything is readable. Every entry is write-denied as well. With one write folder, an entry that overlaps `writeDir` (covers it, lies inside it, or is its parent) is an error. |
+| `writeDeny` | no | Path prefixes (folders or files) the token cannot write, like `readDeny`. Default: empty. Mainly for `writeDir: "/"`: list what the vault's devices treat as rules or configuration. The tool descriptions never list these entries; a denied write says so when it happens. |
+| `readDeny` | no | Path prefixes (folders or files) the token cannot read: an entry covers itself, everything below it and its namesake (`x.md` and `x/`), compared without regard to case. Default: empty, so everything is readable. Every entry is write-denied as well. With one write folder, an entry that overlaps `writeDir` (covers it, lies inside it, or is its parent) is an error. |
 | `expiresAt` | yes | ISO date (`2026-12-31`, meaning 00:00 UTC) or date-time with offset (`2026-12-31T23:59:00Z`). After that: 401 and a log line. |
 | `writesPerHour` | no | Default 60. |
 | `frontmatter` | no | Fields the server sets on every note it writes for this token (strings, numbers, booleans; not `tags`). |
@@ -168,7 +186,9 @@ The token check is one layer; the network should be the other:
 - **Front matter is never executed.** A note whose front matter is JavaScript (`---js`) is read
   without that block (it is neither run nor returned), and scoped writes and `vault_patch` refuse
   to rewrite it. Front matter
-  that is not valid YAML is read as plain text (one log line names the note).
+  that is not valid YAML is read as plain text (one log line names the note). A block that is not
+  a mapping (a sentence, a number, a list between two `---` lines) is not front matter either: the
+  note is read and written as plain text.
 - **Writing the whole vault is a deny list.** With `writeDir: "/"`, a new folder is writable until
   you list it. The name rules keep agent configuration out (dot folders, `claude*`, `agents*`, ...),
   but not notes that people or agents on other devices *treat* as rules (a "house rules" note, a

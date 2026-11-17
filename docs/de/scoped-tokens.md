@@ -30,18 +30,31 @@ Eingeschränkte Tokens nutzen einen **eigenen Listener auf einem eigenen Port**.
   Adresse bekommen `429` (gezählt vor der Token-Prüfung, getrennt vom Haupt-Port).
 - **Lesen** sieht den ganzen Vault außer den Präfixen in `readDeny`. Gesperrte Dateien und Ordner
   blendet `vault_list` aus, `vault_read` lehnt sie ab, und `search_query` lässt sie weg (auch als
-  Backlinks). Symlinks werden vorher aufgelöst. Ein Link führt also weder in einen gesperrten Ordner
+  Backlinks). Ein Eintrag gilt auch für seinen Namensvetter: `projects/plan.md` sperrt den Ordner
+  `projects/plan/`, und `resources/ops` sperrt die Notiz `resources/ops.md` (eine Hub-Notiz und ihr
+  Ordner gehören zusammen). Symlinks werden vorher aufgelöst. Ein Link führt also weder in einen gesperrten Ordner
   noch aus dem Vault hinaus. Lesezugriffe teilen sich höchstens alle 10 Sekunden ein `git pull`. Sie
   können dem Remote also bis zu 10 Sekunden hinterherhinken.
 - **Die Suche hat ein Budget.** Für einen eingeschränkten Token lehnt `search_query` Abfragen ab, die
   größer als 8 KB sind, tiefer als 20 Ebenen gehen oder mehr als 500 Werte haben. Ein
   `glob`-Muster hat höchstens 200 Zeichen, und geschweifte Klammern gelten wörtlich (`{a,b}` wird
-  nicht aufgefächert). Mehr als 500 Treffer, ein Ergebnis über 1 MB oder mehr als 5 Sekunden
-  Rechenzeit enden mit einem Fehler, der um eine engere Abfrage bittet, nie mit einer still
-  gekürzten Liste.
+  nicht aufgefächert). Mehr als 500 Treffer, ein Ergebnis über 1 MB oder mehr als 5 Sekunden für
+  das Lesen und Auswerten der Notizen (geprüft zwischen den Notizen) enden mit einem Fehler, der um
+  eine engere Abfrage bittet, nie mit einer still gekürzten Liste.
+- **Die Suche läuft in einem eigenen Thread.** Eine eingeschränkte Suche läuft in einem
+  Worker-Thread mit Speichergrenze (256 MB) und wird nach 10 Sekunden gestoppt, egal, was sie gerade
+  tut, auch mitten in einem einzelnen langsamen regulären Ausdruck. Es läuft immer nur eine
+  eingeschränkte Suche; eine zweite bekommt einen Fehler („Another search is still running“),
+  statt zu warten. Der Server selbst, und damit der Haupt-Port, antwortet weiter.
+- **Ergebnisse haben eine Obergrenze.** Jedes eingeschränkte Ergebnis darf als JSON höchstens etwa
+  2 MB und 100 000 Werte haben. Der Server misst das, bevor er die Antwort baut, und zählt dabei
+  jeden YAML-Alias (`*name`) bei jeder Verwendung. Eine kleine Notiz, deren Frontmatter sich zu
+  Millionen Werten ausrollt, wird also abgelehnt statt ausgerollt. `vault_read` lehnt eine Datei
+  über 2 MB ab, bevor es sie liest.
 - **Schreiben** (`vault_write`, `vault_patch`) prüft der Server, nicht der Client:
   - nur unter `writeDir`, mit `writeDir: "/"` überall im Vault. Nie in einen Pfad aus `writeDeny`
-    oder `readDeny` (ohne Groß-/Kleinschreibung verglichen);
+    oder `readDeny` (ohne Groß-/Kleinschreibung verglichen, Namensvettern wie beim Lesen
+    eingeschlossen);
   - jeder Teil des Pfads, ob es ihn schon gibt oder nicht: keine Punkt-Dateien oder Punkt-Ordner
     (`.claude/`, `.obsidian/`), keine Zeichen, die ein Betriebssystem nicht speichern kann
     (`<>:"|?*`, Steuerzeichen, Leerzeichen oder Punkt am Ende), nur `.md`-Notizen, kein Name, der
@@ -59,6 +72,9 @@ Eingeschränkte Tokens nutzen einen **eigenen Listener auf einem eigenen Port**.
   - höchstens 100 Zeichen pro Name. Mit einem Schreibordner höchstens 4 Pfadteile unter `writeDir`,
     Ordner und Datei zusammen gezählt (`notes-inbox/a/b/c/x.md` ist das Tiefste, was geht); mit
     `writeDir: "/"` höchstens 10 Pfadteile und höchstens 3 neue Ordner pro Schreibvorgang;
+  - höchstens 170 Zeichen für den ganzen Pfad relativ zum Vault, vorhandene Ordner mitgezählt.
+    Windows erlaubt 260 Zeichen pro Pfad, den Vault-Ordner eingeschlossen, und Git für Windows
+    bricht einen Pull bei längeren Pfaden ab. Eine Konfliktkopie (unten) darf bis zu 200 haben;
   - der Pfad muss schon in einfacher Form sein: kein `..`- oder `.`-Teil, kein `//`, kein `\`, kein
     `/` am Anfang;
   - all das wird geprüft, bevor etwas angelegt wird: Ein abgelehntes Schreiben hinterlässt keine
@@ -67,6 +83,8 @@ Eingeschränkte Tokens nutzen einen **eigenen Listener auf einem eigenen Port**.
     und keine weiteren Hardlinks haben. Der aufgelöste Ordner muss in `realpath(vault/writeDir)`
     liegen;
   - höchstens 200 KB (UTF-8) pro Notiz, bei `vault_patch` für das Ergebnis;
+  - kein Frontmatter, das eine Liste oder ein Mapping über einen YAML-Alias (`*name`) wiederverwendet:
+    Ein paar hundert Byte Aliase können für jeden späteren Leser Milliarden Werte bedeuten;
   - höchstens `writesPerHour` Schreibvorgänge pro Token (gleitende Stunde).
 - **Markierte Notizen.** Nach jedem eingeschränkten Schreiben setzt der Server die
   `frontmatter`-Felder des Tokens und ergänzt seine `tags` in der fertigen Notiz, auch wenn ein
@@ -76,7 +94,9 @@ Eingeschränkte Tokens nutzen einen **eigenen Listener auf einem eigenen Port**.
   vorher auf einen einfachen Namen gebracht (`My Idea.md` → `my-idea-conflict-….md`).
 - **Nachvollziehbar.** Der Commit-Text beginnt mit `<name>: vault_write <pfad>`,
   `<name>: vault_patch <pfad>` oder `<name>: conflict quarantined <pfad>`. Jede Anfrage schreibt
-  eine Log-Zeile, nie mit Inhalt oder Token:
+  eine Log-Zeile, nie mit Inhalt oder Token. Ein Werkzeug-Aufruf, der abgelehnt wird, bevor das
+  Werkzeug läuft (ungültige Argumente, oder ein Client, der das Antwortformat nicht annimmt),
+  bekommt eine Zeile mit `result=rejected`. Pfade über 300 Zeichen kürzt das Log:
 
   ```text
   scoped token=agent method=tools/list
@@ -84,6 +104,7 @@ Eingeschränkte Tokens nutzen einen **eigenen Listener auf einem eigenen Port**.
   scoped token=agent tool=vault_write path="CLAUDE.md" result=denied:outside-write-dir
   scoped token=agent tool=vault_patch path="rules/house-rules.md" result=denied:write-denied
   scoped token=agent tool=vault_read path="missing.md" result=error:ENOENT
+  scoped token=agent method=tools/call tool=vault_write result=rejected
   scoped auth rejected reason=address-not-allowed token=agent from=192.0.2.10
   ```
 
@@ -111,8 +132,8 @@ wegfallen lässt):
 | `tokenEnv` | ja | Name der Umgebungsvariable mit dem Geheimnis. Ihr **Wert** muss sich von den Werten von `TOKEN_INTERNAL`, `OAUTH_CLIENT_SECRET`, `OAUTH_PASSWORD` und den Geheimnissen aller anderen Tokens unterscheiden. |
 | `allowFrom` | ja | Exakte IP-Adressen (keine Bereiche, keine Hostnamen). Gespeichert in einheitlicher Schreibweise, `FD7A:115C:A1E0:0:0:0:0:1` und `fd7a:115c:a1e0::1` sind also dieselbe Adresse. |
 | `writeDir` | ja | Der eine beschreibbare Ordner, relativ zum Vault, nach den Namensregeln oben; oder genau `"/"` für den ganzen Vault. Ein leerer Wert ist ein Fehler, nie „alles“. |
-| `writeDeny` | nein | Pfad-Präfixe (Ordner oder Dateien), die der Token nicht schreiben darf, wie bei `readDeny`. Standard: leer. Vor allem für `writeDir: "/"`: Trag ein, was die Geräte des Vaults als Regeln oder Konfiguration behandeln. |
-| `readDeny` | nein | Pfad-Präfixe (Ordner oder Dateien), die der Token nicht lesen darf: Ein Eintrag gilt für sich selbst und alles darunter, ohne Groß-/Kleinschreibung. Standard: leer, also ist alles lesbar. Jeder Eintrag ist auch für das Schreiben gesperrt. Mit einem Schreibordner ist ein Eintrag, der sich mit `writeDir` überschneidet (ihn abdeckt, in ihm liegt oder darüber liegt), ein Fehler. |
+| `writeDeny` | nein | Pfad-Präfixe (Ordner oder Dateien), die der Token nicht schreiben darf, wie bei `readDeny`. Standard: leer. Vor allem für `writeDir: "/"`: Trag ein, was die Geräte des Vaults als Regeln oder Konfiguration behandeln. Die Werkzeug-Beschreibungen nennen diese Einträge nie; ein gesperrtes Schreiben sagt es erst, wenn es passiert. |
+| `readDeny` | nein | Pfad-Präfixe (Ordner oder Dateien), die der Token nicht lesen darf: Ein Eintrag gilt für sich selbst, alles darunter und seinen Namensvetter (`x.md` und `x/`), ohne Groß-/Kleinschreibung. Standard: leer, also ist alles lesbar. Jeder Eintrag ist auch für das Schreiben gesperrt. Mit einem Schreibordner ist ein Eintrag, der sich mit `writeDir` überschneidet (ihn abdeckt, in ihm liegt oder darüber liegt), ein Fehler. |
 | `expiresAt` | ja | ISO-Datum (`2026-12-31`, gemeint ist 00:00 UTC) oder Datum mit Uhrzeit und Zeitzone (`2026-12-31T23:59:00Z`). Danach: 401 und eine Log-Zeile. |
 | `writesPerHour` | nein | Standard 60. |
 | `frontmatter` | nein | Felder, die der Server in jeder Notiz dieses Tokens setzt (Text, Zahl, Ja/Nein; nicht `tags`). |
@@ -179,7 +200,9 @@ Die Token-Prüfung ist eine Schicht, das Netz sollte die zweite sein:
 - **Frontmatter wird nie ausgeführt.** Eine Notiz mit JavaScript-Frontmatter (`---js`) wird ohne
   diesen Block gelesen (er wird weder ausgeführt noch zurückgegeben). Eingeschränktes Schreiben und
   `vault_patch` lehnen es ab, sie neu zu schreiben. Frontmatter, das kein gültiges YAML ist, wird als
-  normaler Text gelesen (eine Log-Zeile nennt die Notiz).
+  normaler Text gelesen (eine Log-Zeile nennt die Notiz). Ein Block, der kein Mapping ist (ein Satz,
+  eine Zahl, eine Liste zwischen zwei `---`-Zeilen), ist ebenfalls kein Frontmatter: Die Notiz wird
+  als normaler Text gelesen und geschrieben.
 - **Den ganzen Vault schreiben heißt Sperrliste.** Mit `writeDir: "/"` ist ein neuer Ordner
   beschreibbar, bis du ihn einträgst. Die Namensregeln halten Agent-Konfiguration fern
   (Punkt-Ordner, `claude*`, `agents*`, ...), aber nicht Notizen, die Menschen oder Agents auf
