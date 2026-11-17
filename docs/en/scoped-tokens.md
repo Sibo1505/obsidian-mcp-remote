@@ -52,7 +52,7 @@ Scoped tokens use their **own listener on their own port**. The main listener (`
     `.obsidian/`), no characters some OS cannot store (`<>:"|?*`, control characters, a trailing
     space or dot), only `.md` notes, no name starting with one of the known agent instruction names
     (list under [Limits](#limits)) and no Windows device names (`con`, `prn`, `aux`, `nul`,
-    `com0`–`com9`, `lpt0`–`lpt9`). So folders like `claude-config/` stay unwritable without any
+    `com0`–`com9`, `lpt0`–`lpt9`). So folders like `claude-skills/` stay unwritable without any
     `writeDeny` entry;
   - **whatever the write creates** (new folders and a new note) must match `^[a-z0-9][a-z0-9-]*$`
     (folders) and `^[a-z0-9][a-z0-9-]*\.md$` (notes): no upper case, no spaces. Existing folders
