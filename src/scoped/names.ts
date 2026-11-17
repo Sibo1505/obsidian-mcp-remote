@@ -47,6 +47,14 @@ export const MAX_DEPTH_BELOW_WRITE_DIR = 4;
 export const MAX_DEPTH_WHOLE_VAULT = 10;
 /** Most folders one write may create when the token may write the whole vault. */
 export const MAX_NEW_FOLDERS = 3;
+/**
+ * Longest vault-relative path (in characters) of a note a scoped token writes. Windows allows 260
+ * characters for the whole path, the vault folder included, and Git for Windows stops a pull at a
+ * longer one. A conflict copy may use all of it; ordinary writes leave room for the
+ * "-conflict-<time>" that a copy adds to the name.
+ */
+export const MAX_PATH_LENGTH = 200;
+export const MAX_WRITE_PATH_LENGTH = MAX_PATH_LENGTH - 30;
 
 /** Characters that are not allowed in a file or folder name on every OS the vault syncs to. */
 const UNPORTABLE_RE = /[\u0000-\u001f<>:"|?*\\/]/;
