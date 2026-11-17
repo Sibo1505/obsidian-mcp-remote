@@ -123,6 +123,7 @@ export function toSafeStem(stem: string, maxLength: number): string {
 export function writeDirProblem(writeDir: string): string | undefined {
   if (writeDir === "/") return undefined;
   if (writeDir === "") return 'must name a folder inside the vault, or "/" for the whole vault';
+  if (writeDir.startsWith("/")) return 'no leading "/" (a folder is relative to the vault; "/" alone means the whole vault)';
   for (const segment of writeDir.split("/")) {
     const problem = segmentProblem(segment, "dir");
     if (problem) return problem;

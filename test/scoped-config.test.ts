@@ -188,7 +188,11 @@ const invalidCases: { name: string; env: NodeJS.ProcessEnv; field: string }[] = 
     env: envWith([tokenEntry({ writeDir: "notes-inbox/../projects" })]),
     field: `${T}.writeDir:`,
   },
-  { name: "writeDir is absolute", env: envWith([tokenEntry({ writeDir: "/notes-inbox" })]), field: `${T}.writeDir:` },
+  {
+    name: "writeDir is absolute",
+    env: envWith([tokenEntry({ writeDir: "/notes-inbox" })]),
+    field: `${T}.writeDir: no leading "/"`,
+  },
   {
     name: "writeDir with uppercase letters",
     env: envWith([tokenEntry({ writeDir: "Notes-Inbox" })]),
