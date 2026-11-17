@@ -676,6 +676,39 @@ test("scoped writes stop at writesPerHour", async () => {
   });
 });
 
+test("scoped vault_patch counts against writesPerHour, also when it is refused after reading the note", async () => {
+  const patchSection = (target: string) => ({
+    ...patchDefaults,
+    path: `${WRITE_DIR}/note.md`,
+    targetType: "heading",
+    target,
+    operation: "append",
+    content: "more",
+  });
+  const plant = async (vaultRoot: string) => {
+    await mkdir(path.join(vaultRoot, WRITE_DIR), { recursive: true });
+    await writeFile(path.join(vaultRoot, WRITE_DIR, "note.md"), "# Section\ntext\n");
+  };
+  // A patch that succeeds uses up the hour ...
+  await withScopedServer([makeScopedToken({ writesPerHour: 1 })], async ({ baseUrl, vaultRoot }) => {
+    await plant(vaultRoot);
+    const ok = await callTool(baseUrl, "vault_patch", patchSection("Section"));
+    assert.equal(ok.isError, false, ok.text);
+    const next = await callTool(baseUrl, "vault_write", { path: `${WRITE_DIR}/other.md`, content: "x" });
+    assert.match(next.text, /1 per hour/);
+  });
+  // ... and so does one that is refused after the note was read (here: the heading is missing).
+  await withScopedServer([makeScopedToken({ writesPerHour: 1 })], async ({ baseUrl, vaultRoot, logs }) => {
+    await plant(vaultRoot);
+    const refused = await callTool(baseUrl, "vault_patch", patchSection("Missing"));
+    assert.match(refused.text, /Heading not found: Missing/);
+    const next = await callTool(baseUrl, "vault_patch", patchSection("Section"));
+    assert.match(next.text, /1 per hour/);
+    assert.ok(logs.includes(`scoped token=test-agent tool=vault_patch path="${WRITE_DIR}/note.md" result=denied:write-limit`));
+    assert.equal(await readFile(path.join(vaultRoot, WRITE_DIR, "note.md"), "utf-8"), "# Section\ntext\n");
+  });
+});
+
 // --- front matter is never executed, also not when it is written back ---
 
 // A note whose body (after a normal YAML block) starts with a JavaScript front matter block.
