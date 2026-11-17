@@ -19,7 +19,8 @@ import {
   MAX_SEGMENT_LENGTH,
   toSafeStem,
 } from "./names.js";
-import { enforceFrontmatter, type WriteBudget } from "./enforce.js";
+import { checkFrontmatterSize, enforceFrontmatter, type WriteBudget } from "./enforce.js";
+import { parseFrontmatter } from "../vault/frontmatter.js";
 import { MAX_OUTPUT_BYTES, exceedsOutputBudget } from "./budget.js";
 import type { ScopedSearch } from "./search-runner.js";
 import {
@@ -193,9 +194,11 @@ export function registerScopedTools(server: McpServer, ctx: ScopedToolContext): 
       audited(ctx, "vault_write", input.path, async () => {
         const inner = checkWritePath(writeDir, writeDeny, input.path);
         checkNoteSize(input.content);
+        // Counted from here on, also when the front matter is refused below: the limit then caps
+        // the work a token can cause, not only the notes it stores.
+        consumeWrite(ctx);
         const output = enforce(ctx, input.content, input.path);
         checkNoteSize(output);
-        consumeWrite(ctx);
         const target = await resolveWriteTarget(vault, writeDir, inner, { createDirs: true });
         await writeFileNoFollow(target, output);
         const sync = await commitAndPush(vault, input.path, `${ctx.token.name}: vault_write ${input.path}`, commitOptions(ctx));
@@ -210,11 +213,15 @@ export function registerScopedTools(server: McpServer, ctx: ScopedToolContext): 
       audited(ctx, "vault_patch", input.path, async () => {
         const inner = checkWritePath(writeDir, writeDeny, input.path);
         const target = await resolveWriteTarget(vault, writeDir, inner, { createDirs: false });
-        const patched = applyPatch(await readFileNoFollow(target), input);
+        const current = await readFileNoFollow(target);
+        consumeWrite(ctx);
+        // Patching writes the note's front matter back out, so check its size before that happens:
+        // the note may come from another writer.
+        checkFrontmatterSize(parseFrontmatter(current, input.path).data);
+        const patched = applyPatch(current, input);
         checkNoteSize(patched);
         const output = enforce(ctx, patched, input.path);
         checkNoteSize(output);
-        consumeWrite(ctx);
         await writeFileNoFollow(target, output);
         const sync = await commitAndPush(vault, input.path, `${ctx.token.name}: vault_patch ${input.path}`, commitOptions(ctx));
         return { path: input.path, patched: true, ...sync };
