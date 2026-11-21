@@ -121,7 +121,50 @@ export interface CommitOptions {
    */
   quarantine?: (relativePath: string, ourContent: string) => Promise<string>;
   /** Message of the quarantine commit. Default: `conflict: quarantined <path>`. */
-  conflictMessage?: (relativePath: string) => string;
+  conflictMessage?: (relativePath: string, conflictPath: string) => string;
+  /**
+   * Runs after a successful pull --rebase, still under the lock and before the push, when the
+   * caller's commit is still HEAD. `changed` lists the paths that commit changes now, relative to
+   * the vault and without following renames: Git follows a rename made on another device, so the
+   * change may have moved to another note. Returning false (or throwing) handles the result like a
+   * conflict: the rebased commit is dropped, and the caller's version goes to a quarantine copy.
+   */
+  acceptRebased?: (relativePath: string, changed: string[]) => Promise<boolean>;
+}
+
+/**
+ * Writes the quarantine copy of `ourContent`, commits it alone and pushes: the end of every
+ * conflict, with the branch already back on a state that does not contain the caller's commit.
+ */
+async function quarantineAndPush(
+  vaultRoot: string,
+  relativePath: string,
+  ourContent: string,
+  options: CommitOptions,
+): Promise<SyncResult> {
+  const conflictPath = options.quarantine
+    ? await options.quarantine(relativePath, ourContent)
+    : await quarantineConflict(vaultRoot, relativePath, ourContent);
+  await git(vaultRoot, ["add", "--", conflictPath]);
+  const conflictMessage = options.conflictMessage?.(relativePath, conflictPath) ?? `conflict: quarantined ${relativePath}`;
+  await git(vaultRoot, ["commit", "-m", conflictMessage]);
+  await git(vaultRoot, ["push"]);
+  return { synced: false, conflict: true, conflictPath };
+}
+
+const commitStamp = async (vaultRoot: string, rev: string) =>
+  (await git(vaultRoot, ["log", "-1", "--format=%at%x00%ae%x00%B", rev])).stdout;
+
+/** Paths the HEAD commit changes, renames not followed, relative to `vaultRoot`. */
+async function changedByHead(vaultRoot: string): Promise<string[]> {
+  const prefix = (await git(vaultRoot, ["rev-parse", "--show-prefix"])).stdout.trim();
+  const { stdout } = await git(vaultRoot, ["diff", "-z", "--name-only", "--no-renames", "HEAD~1", "HEAD"]);
+  // A path outside the vault folder (when the vault is a subfolder of the repository) keeps a
+  // marker, so it never equals a vault path.
+  return stdout
+    .split("\0")
+    .filter((entry) => entry !== "")
+    .map((entry) => (entry.startsWith(prefix) ? entry.slice(prefix.length) : `(outside the vault) ${entry}`));
 }
 
 export async function commitAndPush(
@@ -143,12 +186,15 @@ export async function commitAndPushLocked(
   message: string,
   options: CommitOptions = {},
 ): Promise<SyncResult> {
+  // The caller's commit before the pull, to recognize it (and its version) after the rebase.
+  let ours: string | undefined;
   try {
     await git(vaultRoot, ["add", "--", relativePath]);
     if (!(await hasStagedChanges(vaultRoot))) {
       return { synced: true };
     }
     await git(vaultRoot, ["commit", "-m", message]);
+    if (options.acceptRebased) ours = (await git(vaultRoot, ["rev-parse", "HEAD"])).stdout.trim();
   } catch (error) {
     logGitError("add/commit", error);
     return { synced: false };
@@ -171,17 +217,36 @@ export async function commitAndPushLocked(
       const ourContent = await readFile(path.join(vaultRoot, relativePath), "utf-8");
       const branch = await currentBranch(vaultRoot);
       await git(vaultRoot, ["reset", "--hard", `origin/${branch}`]);
-      const conflictPath = options.quarantine
-        ? await options.quarantine(relativePath, ourContent)
-        : await quarantineConflict(vaultRoot, relativePath, ourContent);
-      await git(vaultRoot, ["add", "--", conflictPath]);
-      const conflictMessage = options.conflictMessage?.(relativePath) ?? `conflict: quarantined ${relativePath}`;
-      await git(vaultRoot, ["commit", "-m", conflictMessage]);
-      await git(vaultRoot, ["push"]);
-      return { synced: false, conflict: true, conflictPath };
+      return await quarantineAndPush(vaultRoot, relativePath, ourContent, options);
     } catch (recoveryError) {
       logGitError("conflict recovery", recoveryError);
       return { synced: false, conflict: true };
+    }
+  }
+
+  if (options.acceptRebased && ours !== undefined) {
+    // The rebase went through, but Git may have carried the change somewhere else (a note moved or
+    // taken over on another device). The caller decides whether this result may be pushed.
+    let accepted = false;
+    try {
+      const head = (await git(vaultRoot, ["rev-parse", "HEAD"])).stdout.trim();
+      // A replayed commit keeps its author, date and message. Without one at HEAD, the rebase
+      // dropped the caller's commit because the remote already had that change: nothing to check.
+      const stillOurs = head === ours || (await commitStamp(vaultRoot, head)) === (await commitStamp(vaultRoot, ours));
+      accepted = !stillOurs || (await options.acceptRebased(relativePath, await changedByHead(vaultRoot)));
+    } catch (error) {
+      logGitError("check after pull --rebase", error);
+    }
+    if (!accepted) {
+      try {
+        const ourContent = (await git(vaultRoot, ["show", `${ours}:${relativePath}`])).stdout;
+        // Drop only the caller's rebased commit; everything below it stays as the pull left it.
+        await git(vaultRoot, ["reset", "--hard", "HEAD~1"]);
+        return await quarantineAndPush(vaultRoot, relativePath, ourContent, options);
+      } catch (recoveryError) {
+        logGitError("quarantine after pull --rebase", recoveryError);
+        return { synced: false, conflict: true };
+      }
     }
   }
 

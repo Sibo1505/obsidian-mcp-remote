@@ -10,7 +10,7 @@ import { vaultListSchema } from "../tools/vault-list.js";
 import { searchQuerySchema } from "../tools/search-query.js";
 import { hasBlockedSegment, listDir, resolveInVault, statNote } from "../vault/fs.js";
 import { SCOPED_SEARCH_LIMITS, SearchLimitError } from "../vault/search.js";
-import { commitAndPushLocked, withGitLock, type CommitOptions } from "../vault/git.js";
+import { commitAndPushLocked, withGitLock, type CommitOptions, type SyncResult } from "../vault/git.js";
 import type { ScopedToken } from "./config.js";
 import {
   MAX_DEPTH_BELOW_WRITE_DIR,
@@ -187,7 +187,29 @@ function commitOptions(ctx: ScopedToolContext): CommitOptions {
       await writeFileNoFollow(target, ourContent);
       return conflictPath;
     },
-    conflictMessage: (relativePath) => `${name}: conflict quarantined ${relativePath}`,
+    conflictMessage: (relativePath, conflictPath) => `${name}: conflict quarantined ${relativePath} as ${conflictPath}`,
+    acceptRebased: async (relativePath, changed) => {
+      // Git follows renames: had another device moved the note, the change would now land in the
+      // moved note, in any folder (a denied one, or outside writeDir). Push only a change to the
+      // note that was asked for.
+      if (changed.length === 0) return true;
+      if (changed.length !== 1 || changed[0] !== relativePath) return false;
+      // With "own", the merged note must still be the token's: another device may have taken it over.
+      if (ctx.token.modifyExisting !== "own") return true;
+      const merged = await readForChange(path.join(ctx.config.VAULT_PATH, ...relativePath.split("/")), relativePath);
+      return isOwnNote(parseFrontmatter(merged, relativePath), ctx.token.frontmatter);
+    },
+  };
+}
+
+/** For a conflict, what happened to the note and where the token's version went. */
+function conflictNote(notePath: string, sync: SyncResult): { note?: string } {
+  if (!sync.conflict) return {};
+  return {
+    note: sync.conflictPath
+      ? `${notePath} was changed, moved or taken over on another device meanwhile and stays as it is there; ` +
+        `this version was saved as ${sync.conflictPath}`
+      : `${notePath} was changed on another device meanwhile, and this version could not be saved; read the note again`,
   };
 }
 
@@ -250,7 +272,7 @@ export function registerScopedTools(server: McpServer, ctx: ScopedToolContext): 
           await writeFileNoFollow(target, output);
           return commitAndPushLocked(vault, input.path, `${ctx.token.name}: vault_write ${input.path}`, commitOptions(ctx));
         });
-        return { path: input.path, written: true, ...sync };
+        return { path: input.path, written: true, ...sync, ...conflictNote(input.path, sync) };
       }),
   );
 
@@ -279,7 +301,7 @@ export function registerScopedTools(server: McpServer, ctx: ScopedToolContext): 
           await writeFileNoFollow(target, output);
           return commitAndPushLocked(vault, input.path, `${ctx.token.name}: vault_patch ${input.path}`, commitOptions(ctx));
         });
-        return { path: input.path, patched: true, ...sync };
+        return { path: input.path, patched: true, ...sync, ...conflictNote(input.path, sync) };
       }),
   );
 

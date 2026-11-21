@@ -519,7 +519,7 @@ test("a scoped write that conflicts is quarantined under the scoped naming rules
         assert.match(await readFile(path.join(vaultRoot, sync.conflictPath!), "utf-8"), /mine/);
 
         const { stdout } = await gitIn(vaultRoot, ["log", "origin/main", "-1", "--format=%s"]);
-        assert.equal(stdout.trim(), `test-agent: conflict quarantined ${notePath}`);
+        assert.equal(stdout.trim(), `test-agent: conflict quarantined ${notePath} as ${sync.conflictPath}`);
       },
       { vaultRoot },
     );
