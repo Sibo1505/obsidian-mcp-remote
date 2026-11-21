@@ -83,8 +83,18 @@ Scoped tokens use their **own listener on their own port**. The main listener (`
     refuse it (`denied:foreign-note`) and ask the client to create a new note and link to it.
     The server reads the existing note without following a symlink and only up to 2 MB, and the
     check, the write and the commit run under one lock, so no pull can bring in another version of
-    the note in between. Once a person removes the token's fields from a note, the note is theirs
-    and the token can no longer change it;
+    the note between the check and the write. A change from another device that the server has not
+    pulled yet is merged by Git when the token's change is committed; the server checks that result
+    before it pushes. If the change would land in another path (another device moved or renamed the
+    note, also into a denied folder or out of `writeDir`) or, with `"own"`, the merged note no
+    longer carries the token's fields, the note stays as the other device left it, and the token's
+    version becomes a conflict copy next to the path it asked for (see Conflicts). Changes the token
+    makes before your change has reached the server are merged by Git on your device, into a moved
+    or renamed note as well. To take a note over, copy its text into a new note of your own, or
+    remove the fields and sync first, and move or edit it afterwards. A note the token created stays
+    its own as long as it carries these fields, also after someone else wrote into it; remove the
+    fields before you write into such a note. Give every token its own field values (its name, say):
+    tokens with the same fields can change each other's notes;
   - at most 200 KB (UTF-8) per note; for `vault_patch` this is checked on the result;
   - no front matter that reuses a list or mapping through a YAML alias (`*name`), and none with
     more than 10 000 values or about 2 MB once written out (one long text reused through an alias
@@ -101,12 +111,14 @@ Scoped tokens use their **own listener on their own port**. The main listener (`
 - **Marked notes.** After every scoped write, the server sets the token's `frontmatter` fields and
   adds its `tags` in the final note, even when a write or patch tried to remove them. With
   `modifyExisting: "own"` these fields also decide which existing notes the token may change later.
-- **Conflicts.** If someone else changed the same note at the same time, the server keeps the
-  token's version as `<name>-conflict-<yyyymmddhhmmss>.md` next to it, under the same rules: with
-  `modifyExisting: "own"` a copy never replaces a note the token did not write. The name is reduced
-  to a plain one first (`My Idea.md` → `my-idea-conflict-….md`).
+- **Conflicts.** If someone else changed the same note at the same time, or another device moved
+  the note or took it over before the server pulled (see above), the server keeps the token's
+  version as `<name>-conflict-<yyyymmddhhmmss>.md` next to the path it asked for, under the same
+  rules: with `modifyExisting: "own"` a copy never replaces a note the token did not write. The
+  name is reduced to a plain one first (`My Idea.md` → `my-idea-conflict-….md`). The answer says
+  so: `synced: false`, `conflict: true`, `conflictPath` and a short `note` for the client.
 - **Traceable.** The commit message starts with `<name>: vault_write <path>`,
-  `<name>: vault_patch <path>` or `<name>: conflict quarantined <path>`. Every request writes one
+  `<name>: vault_patch <path>` or `<name>: conflict quarantined <path> as <copy>`. Every request writes one
   log line, never content or the token. A tool call that is refused before its tool runs (invalid
   arguments, or a client that does not accept the answer's format) gets a `result=rejected` line.
   Paths longer than 300 characters are cut in the log:
@@ -148,7 +160,7 @@ Fields per token (unknown fields are an error, so a typo cannot silently drop a 
 | `readDeny` | no | Path prefixes (folders or files) the token cannot read: an entry covers itself, everything below it and its namesake (`x.md` and `x/`), compared without regard to case. Default: empty, so everything is readable. Every entry is write-denied as well. With one write folder, an entry that overlaps `writeDir` (covers it, lies inside it, or is its parent) is an error. |
 | `expiresAt` | yes | ISO date (`2026-12-31`, meaning 00:00 UTC) or date-time with offset (`2026-12-31T23:59:00Z`). After that: 401 and a log line. |
 | `writesPerHour` | no | Default 60. Counts write attempts, also refused ones, from the point described above. With `writeDir: "/"`, set it well below the default, to what the agent really needs: it caps how many notes a misled agent can write in an hour. |
-| `frontmatter` | no | Fields the server sets on every note it writes for this token (strings, numbers, booleans; not `tags`). With `modifyExisting: "own"` they also mark the notes the token may change. |
+| `frontmatter` | no | Fields the server sets on every note it writes for this token (strings, numbers, booleans; not `tags`). With `modifyExisting: "own"` they also mark the notes the token may change, so give every token its own values (its name, say). |
 | `tags` | no | Tags the server adds to every note it writes for this token. |
 | `modifyExisting` | no | `"own"`: change only existing notes that carry every `frontmatter` field of this token with exactly that value; `"any"`: every writable note. Default `"own"` with `writeDir: "/"`, `"any"` with one write folder. `"own"` needs at least one `frontmatter` field, otherwise the scoped listener does not start. New notes are allowed either way. |
 
