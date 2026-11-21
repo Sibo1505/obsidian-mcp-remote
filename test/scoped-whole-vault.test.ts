@@ -6,7 +6,9 @@ import { test } from "node:test";
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { gitIn, withGitFixture, withTestServer } from "./helpers.js";
+import type { AddressInfo } from "node:net";
+import { gitIn, makeTestConfig, withGitFixture, withTestServer } from "./helpers.js";
+import { createApp } from "../src/app.js";
 import { withGitLock } from "../src/vault/git.js";
 import { toSafeStem } from "../src/scoped/names.js";
 import type { ScopedToken } from "../src/scoped/config.js";
@@ -606,7 +608,7 @@ test("whole-vault token: a conflict on its own note with a free-form name is qua
         assert.match(await readFile(path.join(vaultRoot, sync.conflictPath!), "utf-8"), /mine/);
 
         const { stdout } = await gitIn(vaultRoot, ["log", "origin/main", "-1", "--format=%s"]);
-        assert.equal(stdout.trim(), `test-agent: conflict quarantined ${notePath}`);
+        assert.equal(stdout.trim(), `test-agent: conflict quarantined ${notePath} as ${sync.conflictPath}`);
       },
       { vaultRoot },
     );
@@ -623,4 +625,204 @@ test("toSafeStem turns any note name into a plain one and never into a reserved 
   assert.equal(toSafeStem("", 80), "note");
   assert.equal(toSafeStem("a-very-long-name", 6), "a-very");
   assert.equal(toSafeStem("ab---cd", 3), "ab");
+});
+
+// --- after the rebase: the token's change lands only in the note it asked for (SEC-022) ---
+
+/** A note the token writes first; another device then takes it over or moves it. */
+const IDEA = "# Idea\n\nfirst thoughts\n\nmore thoughts\n\n## Log\n- one\n- two\n- three\n\n## End\nlast line\n";
+const APPEND = {
+  ...patchDefaults,
+  targetType: "heading",
+  target: "Idea::Log",
+  operation: "append",
+  content: "- TOKEN-WAS-HERE",
+};
+
+/**
+ * The token writes `notePath` (so it is its own and on the remote). Then the other device pulls,
+ * changes the note (takes it over by replacing the token's field, and/or moves it) and pushes.
+ * The server does not pull in between: scoped writes do not pull before they check.
+ */
+async function adoptedOnOtherDevice(
+  baseUrl: string,
+  otherClone: string,
+  notePath: string,
+  change: { removeFields: boolean; moveTo?: string },
+): Promise<{ adoptedPath: string; adoptedText: string }> {
+  const seeded = await callTool(baseUrl, "vault_write", { path: notePath, content: IDEA });
+  assert.equal(seeded.isError, false, seeded.text);
+  assert.equal((JSON.parse(seeded.text) as { synced: boolean }).synced, true, seeded.text);
+  await gitIn(otherClone, ["pull", "--no-rebase"]);
+  const adoptedPath = change.moveTo ?? notePath;
+  let text = await readFile(path.join(otherClone, notePath), "utf-8");
+  if (change.removeFields) text = text.replace("source: test-agent\n", "owner: person\n");
+  if (change.moveTo) {
+    await mkdir(path.dirname(path.join(otherClone, change.moveTo)), { recursive: true });
+    await gitIn(otherClone, ["mv", notePath, change.moveTo]);
+  }
+  await writeFile(path.join(otherClone, adoptedPath), text);
+  await gitIn(otherClone, ["add", "-A"]);
+  await gitIn(otherClone, ["commit", "-m", "other device takes the note over"]);
+  await gitIn(otherClone, ["push", "origin", "main"]);
+  return { adoptedPath, adoptedText: text };
+}
+
+/** The remote as the other device sees it after pulling. */
+async function remoteAfterPull(otherClone: string): Promise<void> {
+  await gitIn(otherClone, ["pull", "--no-rebase", "--no-edit"]);
+}
+
+const rebaseCases: {
+  name: string;
+  scoped: () => ScopedToken;
+  notePath: string;
+  change: { removeFields: boolean; moveTo?: string };
+}[] = [
+  {
+    name: "5a: the other device removed the token's fields and pushed",
+    scoped: () => wholeVaultToken(),
+    notePath: "inbox/idea.md",
+    change: { removeFields: true },
+  },
+  {
+    name: "5b: the other device removed the fields and moved the note",
+    scoped: () => wholeVaultToken(),
+    notePath: "inbox/idea.md",
+    change: { removeFields: true, moveTo: "Projects/idea.md" },
+  },
+  {
+    name: "5d: the other device moved the note into a writeDeny folder",
+    scoped: () => wholeVaultToken({ writeDeny: ["resources/rules", "private", "rules"] }),
+    notePath: "inbox/idea.md",
+    change: { removeFields: false, moveTo: "rules/idea.md" },
+  },
+  {
+    name: '5f: one write folder ("any"), the other device moved the note out of writeDir',
+    scoped: () => makeScopedToken(),
+    notePath: `${WRITE_DIR}/idea.md`,
+    change: { removeFields: false, moveTo: "Projects/idea.md" },
+  },
+];
+
+for (const { name, scoped, notePath, change } of rebaseCases) {
+  test(`after the rebase (${name}): the note stays as the other device left it, the token's version becomes a copy`, async () => {
+    await withGitFixture(async (vaultRoot, otherClone) => {
+      await withScopedServer(
+        [scoped()],
+        async ({ baseUrl, logs }) => {
+          const { adoptedPath, adoptedText } = await adoptedOnOtherDevice(baseUrl, otherClone, notePath, change);
+
+          const result = await callTool(baseUrl, "vault_patch", { ...APPEND, path: notePath });
+          assert.equal(result.isError, false, result.text);
+          const sync = JSON.parse(result.text) as { synced: boolean; conflict?: boolean; conflictPath?: string; note?: string };
+          assert.equal(sync.synced, false, result.text);
+          assert.equal(sync.conflict, true, result.text);
+          const folder = notePath.slice(0, notePath.lastIndexOf("/"));
+          assert.match(sync.conflictPath ?? "", new RegExp(`^${folder}/idea-conflict-\\d{14}\\.md$`), result.text);
+          assert.match(sync.note ?? "", /changed, moved or taken over/, result.text);
+
+          await remoteAfterPull(otherClone);
+          // Byte for byte what the other device pushed, wherever it put the note.
+          assert.equal(await readFile(path.join(otherClone, adoptedPath), "utf-8"), adoptedText);
+          const copy = await readFile(path.join(otherClone, sync.conflictPath!), "utf-8");
+          assert.match(copy, /TOKEN-WAS-HERE/);
+          assert.match(copy, /^---\nsource: test-agent\n/);
+          // The only commit the token pushed names the file it really added.
+          const { stdout } = await gitIn(otherClone, ["log", "-1", "--format=%s", "--name-status"]);
+          assert.equal(
+            stdout.trim(),
+            `test-agent: conflict quarantined ${notePath} as ${sync.conflictPath}\n\nA\t${sync.conflictPath}`,
+          );
+          assert.ok(logs.some((l) => l.includes("tool=vault_patch") && l.endsWith("result=ok")));
+        },
+        { vaultRoot },
+      );
+    });
+  });
+}
+
+test("after the rebase: when the server has pulled first, the change is refused before anything is written (5e)", async () => {
+  await withGitFixture(async (vaultRoot, otherClone) => {
+    await withScopedServer(
+      [wholeVaultToken({ writeDeny: ["rules"] })],
+      async ({ baseUrl }) => {
+        const { adoptedPath, adoptedText } = await adoptedOnOtherDevice(baseUrl, otherClone, "inbox/idea.md", {
+          removeFields: false,
+          moveTo: "rules/idea.md",
+        });
+        // Any read pulls first.
+        await callTool(baseUrl, "vault_list", { path: "." });
+        const result = await callTool(baseUrl, "vault_patch", { ...APPEND, path: "inbox/idea.md" });
+        assert.equal(result.isError, true, result.text);
+        await remoteAfterPull(otherClone);
+        assert.equal(await readFile(path.join(otherClone, adoptedPath), "utf-8"), adoptedText);
+      },
+      { vaultRoot },
+    );
+  });
+});
+
+test("after the rebase: without a change elsewhere, and with a change to another note, the write syncs as before", async () => {
+  await withGitFixture(async (vaultRoot, otherClone) => {
+    await withScopedServer(
+      [wholeVaultToken()],
+      async ({ baseUrl }) => {
+        assert.equal((await callTool(baseUrl, "vault_write", { path: "inbox/idea.md", content: IDEA })).isError, false);
+        const plain = await callTool(baseUrl, "vault_patch", { ...APPEND, path: "inbox/idea.md" });
+        assert.deepEqual(JSON.parse(plain.text), { path: "inbox/idea.md", patched: true, synced: true });
+
+        await gitIn(otherClone, ["pull", "--no-rebase"]);
+        await writeFile(path.join(otherClone, "other.md"), "# another note\n");
+        await gitIn(otherClone, ["add", "-A"]);
+        await gitIn(otherClone, ["commit", "-m", "other device adds another note"]);
+        await gitIn(otherClone, ["push", "origin", "main"]);
+
+        const next = await callTool(baseUrl, "vault_patch", { ...APPEND, path: "inbox/idea.md", content: "- second" });
+        assert.deepEqual(JSON.parse(next.text), { path: "inbox/idea.md", patched: true, synced: true });
+        await remoteAfterPull(otherClone);
+        assert.match(await readFile(path.join(otherClone, "inbox", "idea.md"), "utf-8"), /TOKEN-WAS-HERE[\s\S]*- second/);
+        assert.equal(await readFile(path.join(otherClone, "other.md"), "utf-8"), "# another note\n");
+      },
+      { vaultRoot },
+    );
+  });
+});
+
+test("after the rebase: the main listener merges a moved note as before (no check there)", async () => {
+  await withGitFixture(async (vaultRoot, otherClone) => {
+    const stores = await mkdtemp(path.join(tmpdir(), "main-stores-"));
+    const config = makeTestConfig(vaultRoot, {
+      OAUTH_STORE_PATH: path.join(stores, "oauth-store.json"),
+      WEBAUTHN_STORE_PATH: path.join(stores, "webauthn-credential.json"),
+    });
+    const server = createApp(config).listen(0);
+    await new Promise((resolve) => server.once("listening", resolve));
+    const mainUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const call = async (name: string, args: Record<string, unknown>) => {
+      const res = await mcpRequest(mainUrl, config.TOKEN_INTERNAL, "tools/call", { name, arguments: args }, {
+        "X-Forwarded-For": "100.64.0.10",
+      });
+      return (res.body as { result: { isError?: boolean; content: { text: string }[] } }).result;
+    };
+    try {
+      const written = await call("vault_write", { path: "inbox/idea.md", content: IDEA });
+      assert.equal(written.isError, undefined, written.content[0].text);
+      await gitIn(otherClone, ["pull", "--no-rebase"]);
+      await mkdir(path.join(otherClone, "Projects"), { recursive: true });
+      await gitIn(otherClone, ["mv", "inbox/idea.md", "Projects/idea.md"]);
+      await gitIn(otherClone, ["commit", "-m", "other device moves the note"]);
+      await gitIn(otherClone, ["push", "origin", "main"]);
+
+      // The main port patches its stale copy; Git follows the move as it always did.
+      const patched = await call("vault_patch", { ...APPEND, path: "inbox/idea.md" });
+      assert.equal(patched.isError, undefined, patched.content[0].text);
+      assert.deepEqual(JSON.parse(patched.content[0].text), { path: "inbox/idea.md", patched: true, synced: true });
+      await remoteAfterPull(otherClone);
+      assert.match(await readFile(path.join(otherClone, "Projects", "idea.md"), "utf-8"), /TOKEN-WAS-HERE/);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+      await rm(stores, { recursive: true, force: true });
+    }
+  });
 });
