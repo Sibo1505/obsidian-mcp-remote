@@ -95,8 +95,21 @@ Eingeschränkte Tokens nutzen einen **eigenen Listener auf einem eigenen Port**.
     `vault_patch` lehnen sie ab (`denied:foreign-note`) und bitten den Client, eine neue Notiz
     anzulegen und sie zu verlinken. Der Server liest die vorhandene Notiz, ohne einem Symlink zu
     folgen, und nur bis 2 MB. Prüfung, Schreiben und Commit laufen unter einer Sperre, also kann
-    kein Pull dazwischen eine andere Fassung der Notiz einspielen. Entfernt ein Mensch die Felder
-    des Tokens aus einer Notiz, gehört sie ihm, und der Token kann sie nicht mehr ändern;
+    kein Pull zwischen Prüfung und Schreiben eine andere Fassung der Notiz einspielen. Eine Änderung
+    eines anderen Geräts, die der Server noch nicht gezogen hat, führt Git beim Commit des Tokens
+    zusammen. Dieses Ergebnis prüft der Server, bevor er pusht. Würde die Änderung in einem anderen
+    Pfad landen (ein anderes Gerät hat die Notiz verschoben oder umbenannt, auch in einen gesperrten
+    Ordner oder aus `writeDir` hinaus) oder trägt die zusammengeführte Notiz bei `"own"` die Felder
+    des Tokens nicht mehr, bleibt die Notiz, wie das andere Gerät sie hinterlassen hat. Die Fassung
+    des Tokens wird dann eine Konfliktkopie neben dem angefragten Pfad (siehe Konflikte).
+    Änderungen, die der Token macht, bevor deine Änderung den Server erreicht hat, führt Git auf
+    deinem Gerät zusammen, auch in eine verschobene oder umbenannte Notiz. Um eine Notiz zu
+    übernehmen, kopierst du ihren Text in eine neue eigene Notiz, oder du entfernst die Felder und
+    synchronisierst zuerst und verschiebst oder bearbeitest sie danach. Eine Notiz, die der Token
+    angelegt hat, bleibt seine, solange sie diese Felder trägt, auch wenn jemand anderes
+    hineingeschrieben hat; entferne die Felder, bevor du in so eine Notiz schreibst. Gib jedem Token
+    eigene Feldwerte (zum Beispiel seinen Namen): Tokens mit denselben Feldern können die Notizen
+    des anderen ändern;
   - höchstens 200 KB (UTF-8) pro Notiz, bei `vault_patch` für das Ergebnis;
   - kein Frontmatter, das eine Liste oder ein Mapping über einen YAML-Alias (`*name`) wiederverwendet,
     und keines mit mehr als 10 000 Werten oder etwa 2 MB, wenn es ausgeschrieben wird (ein langer
@@ -115,12 +128,15 @@ Eingeschränkte Tokens nutzen einen **eigenen Listener auf einem eigenen Port**.
   `frontmatter`-Felder des Tokens und ergänzt seine `tags` in der fertigen Notiz, auch wenn ein
   Schreiben oder Patch sie entfernen wollte. Mit `modifyExisting: "own"` entscheiden diese Felder
   auch, welche vorhandenen Notizen der Token später ändern darf.
-- **Konflikte.** Hat jemand dieselbe Notiz gleichzeitig geändert, behält der Server die Fassung des
-  Tokens als `<name>-conflict-<jjjjmmtthhmmss>.md` daneben, nach denselben Regeln: Mit
-  `modifyExisting: "own"` ersetzt eine Kopie nie eine Notiz, die der Token nicht geschrieben hat.
-  Der Name wird vorher auf einen einfachen Namen gebracht (`My Idea.md` → `my-idea-conflict-….md`).
+- **Konflikte.** Hat jemand dieselbe Notiz gleichzeitig geändert, oder hat ein anderes Gerät die
+  Notiz verschoben oder übernommen, bevor der Server gezogen hat (siehe oben), behält der Server
+  die Fassung des Tokens als `<name>-conflict-<jjjjmmtthhmmss>.md` neben dem angefragten Pfad, nach
+  denselben Regeln: Mit `modifyExisting: "own"` ersetzt eine Kopie nie eine Notiz, die der Token
+  nicht geschrieben hat. Der Name wird vorher auf einen einfachen Namen gebracht
+  (`My Idea.md` → `my-idea-conflict-….md`). Die Antwort sagt es: `synced: false`, `conflict: true`,
+  `conflictPath` und eine kurze `note` für den Client.
 - **Nachvollziehbar.** Der Commit-Text beginnt mit `<name>: vault_write <pfad>`,
-  `<name>: vault_patch <pfad>` oder `<name>: conflict quarantined <pfad>`. Jede Anfrage schreibt
+  `<name>: vault_patch <pfad>` oder `<name>: conflict quarantined <pfad> as <kopie>`. Jede Anfrage schreibt
   eine Log-Zeile, nie mit Inhalt oder Token. Ein Werkzeug-Aufruf, der abgelehnt wird, bevor das
   Werkzeug läuft (ungültige Argumente, oder ein Client, der das Antwortformat nicht annimmt),
   bekommt eine Zeile mit `result=rejected`. Pfade über 300 Zeichen kürzt das Log:
@@ -163,7 +179,7 @@ wegfallen lässt):
 | `readDeny` | nein | Pfad-Präfixe (Ordner oder Dateien), die der Token nicht lesen darf: Ein Eintrag gilt für sich selbst, alles darunter und seinen Namensvetter (`x.md` und `x/`), ohne Groß-/Kleinschreibung. Standard: leer, also ist alles lesbar. Jeder Eintrag ist auch für das Schreiben gesperrt. Mit einem Schreibordner ist ein Eintrag, der sich mit `writeDir` überschneidet (ihn abdeckt, in ihm liegt oder darüber liegt), ein Fehler. |
 | `expiresAt` | ja | ISO-Datum (`2026-12-31`, gemeint ist 00:00 UTC) oder Datum mit Uhrzeit und Zeitzone (`2026-12-31T23:59:00Z`). Danach: 401 und eine Log-Zeile. |
 | `writesPerHour` | nein | Standard 60. Zählt Schreibversuche ab dem oben beschriebenen Punkt, auch abgelehnte. Mit `writeDir: "/"` setzt du den Wert deutlich unter den Standard, auf das, was der Agent wirklich braucht: Er begrenzt, wie viele Notizen ein getäuschter Agent in einer Stunde schreiben kann. |
-| `frontmatter` | nein | Felder, die der Server in jeder Notiz dieses Tokens setzt (Text, Zahl, Ja/Nein; nicht `tags`). Mit `modifyExisting: "own"` kennzeichnen sie auch die Notizen, die der Token ändern darf. |
+| `frontmatter` | nein | Felder, die der Server in jeder Notiz dieses Tokens setzt (Text, Zahl, Ja/Nein; nicht `tags`). Mit `modifyExisting: "own"` kennzeichnen sie auch die Notizen, die der Token ändern darf. Gib deshalb jedem Token eigene Werte (zum Beispiel seinen Namen). |
 | `tags` | nein | Tags, die der Server in jeder Notiz dieses Tokens ergänzt. |
 | `modifyExisting` | nein | `"own"`: nur vorhandene Notizen ändern, die alle `frontmatter`-Felder dieses Tokens mit genau diesem Wert tragen; `"any"`: jede beschreibbare Notiz. Standard `"own"` mit `writeDir: "/"`, `"any"` mit einem Schreibordner. `"own"` braucht mindestens ein `frontmatter`-Feld, sonst startet der eingeschränkte Listener nicht. Neue Notizen sind in beiden Fällen erlaubt. |
 
