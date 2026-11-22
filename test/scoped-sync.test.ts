@@ -12,6 +12,7 @@ import type { AddressInfo } from "node:net";
 import { gitIn, makeTestConfig, withGitFixture } from "./helpers.js";
 import { createApp } from "../src/app.js";
 import { enforceFrontmatter } from "../src/scoped/enforce.js";
+import { commitAndPush } from "../src/vault/git.js";
 import type { ScopedToken } from "../src/scoped/config.js";
 import { callTool, makeScopedToken, mcpRequest, withScopedServer } from "./scoped-helpers.js";
 
@@ -536,7 +537,7 @@ test("after a restart: a token's commit left on the server (marked by its traile
     await mkdir(path.join(vaultRoot, "inbox"), { recursive: true });
     await writeFile(path.join(vaultRoot, "inbox", "crash.md"), "# TOKEN-WAS-HERE\n");
     await gitIn(vaultRoot, ["add", "inbox/crash.md"]);
-    await gitIn(vaultRoot, ["commit", "-m", "test-agent: vault_write inbox/crash.md\n\nScoped-Token: test-agent"]);
+    await gitIn(vaultRoot, ["commit", "-m", "test-agent: vault_write inbox/crash.md\n\nScoped-Token: test-agent\nScoped-Write: 6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b"]); // both trailers, as every token commit carries them
     await withMainServer(vaultRoot, async (call) => {
       assert.equal(json((await call("vault_write", { path: "main.md", content: "# main\n" })).text).synced, true);
     });
@@ -775,6 +776,62 @@ test("N3a, across two writes: the main port writes the held-back note during the
         assert.equal(await status(vaultRoot), "");
       },
       { vaultRoot },
+    );
+  });
+});
+
+// --- round 10: a commit of the main port never counts as a token's (SEC-027, rest) ---
+
+test("E3 / SEC-027: a main-port commit text with a trailer block, or an operator's squash without a write id, is never taken for a token's commit", async () => {
+  await withGitFixture(async (vaultRoot, otherClone) => {
+    // Trailer block: what a main-port path with an empty line and trailer lines makes of its commit
+    // text (a valid file name on Linux), handed to commitAndPush the way the main port does.
+    await mkdir(path.join(vaultRoot, "p3k"), { recursive: true });
+    await writeFile(path.join(vaultRoot, "p3k", "owner.md"), "# the owner's note\n");
+    const message = "vault_write: p3k/a\n\nScoped-Token: test-agent\nNote: b.md";
+    assert.deepEqual(await commitAndPush(vaultRoot, "p3k/owner.md", message), { synced: true });
+    // Operator squash on the server that ends with a token's trailer but has no write id.
+    await writeFile(path.join(vaultRoot, "p3k", "squash.md"), "# squashed\n");
+    await gitIn(vaultRoot, ["add", "p3k/squash.md"]);
+    await gitIn(vaultRoot, [
+      "commit",
+      "-m",
+      "Squashed commit of the following:\n\ncommit 0000\n    test-agent: vault_write inbox/x.md\n\nScoped-Token: test-agent",
+    ]);
+    await withMainServer(vaultRoot, async (call) => {
+      assert.equal(json((await call("vault_write", { path: "main.md", content: "# main\n" })).text).synced, true);
+    });
+    await pullOther(otherClone);
+    assert.equal(await readFile(path.join(otherClone, "p3k", "owner.md"), "utf-8"), "# the owner's note\n");
+    assert.equal(await readFile(path.join(otherClone, "p3k", "squash.md"), "utf-8"), "# squashed\n");
+    // The commit text has no control characters left; a normal path gives exactly the text as before.
+    const texts = (await gitIn(otherClone, ["log", "-3", "--format=%B%x00"])).stdout.split("\0").map((t) => t.trim());
+    assert.equal(texts[0], "vault_write: main.md");
+    assert.equal(texts[2], "vault_write: p3k/a??Scoped-Token: test-agent?Note: b.md");
+  });
+});
+
+test("E3, conflict copy: the main port's quarantine commit text loses its control characters too and goes out", async () => {
+  await withGitFixture(async (vaultRoot, otherClone) => {
+    await writeFile(path.join(vaultRoot, "clash.md"), "first\n");
+    assert.deepEqual(await commitAndPush(vaultRoot, "clash.md", "vault_write: clash.md"), { synced: true });
+    await gitIn(otherClone, ["pull", "--no-rebase"]);
+    await writeFile(path.join(otherClone, "clash.md"), "edited on another device\n");
+    await gitIn(otherClone, ["commit", "-am", "other device edits"]);
+    await gitIn(otherClone, ["push", "origin", "main"]);
+
+    await writeFile(path.join(vaultRoot, "clash.md"), "mine\n");
+    // Any caller's text is cleaned centrally; here one that would end with a trailer block.
+    const result = await commitAndPush(vaultRoot, "clash.md", "vault_write: clash.md", {
+      conflictMessage: () => "conflict: quarantined a\n\nScoped-Token: test-agent\nNote: b.md",
+    });
+    assert.equal(result.conflict, true, JSON.stringify(result));
+    assert.ok(result.conflictPath, JSON.stringify(result));
+    await pullOther(otherClone);
+    assert.equal(await readFile(path.join(otherClone, result.conflictPath!), "utf-8"), "mine\n");
+    assert.equal(
+      (await gitIn(otherClone, ["log", "-1", "--format=%B"])).stdout.trim(),
+      "conflict: quarantined a??Scoped-Token: test-agent?Note: b.md",
     );
   });
 });

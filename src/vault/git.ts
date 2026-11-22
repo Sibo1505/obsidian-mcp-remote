@@ -84,6 +84,13 @@ export async function pullBestEffort(vaultRoot: string): Promise<void> {
 }
 
 /**
+ * The text of a commit of the main port, without control characters: a path is part of it, and a
+ * path with line breaks could otherwise end the text with a trailer block that marks a token's
+ * commit (Scoped-Token). A normal path gives exactly the text as before.
+ */
+const commitText = (message: string) => message.replace(/[\u0000-\u001f\u007f]/g, "?");
+
+/**
  * Saves the file's current (our-version) content under a sibling `*.claude-conflict.<ts>.md` path
  * so a rebase conflict never loses the write that triggered it, then resets the real path back to
  * origin's version. Keeping the branch clean (matching origin) is what stops one conflict from
@@ -155,7 +162,7 @@ async function quarantineAndPush(
     : await quarantineConflict(vaultRoot, relativePath, ourContent);
   await git(vaultRoot, ["add", "--", conflictPath]);
   const conflictMessage = options.conflictMessage?.(relativePath, conflictPath) ?? `conflict: quarantined ${relativePath}`;
-  await git(vaultRoot, ["commit", "-m", conflictMessage]);
+  await git(vaultRoot, ["commit", "-m", commitText(conflictMessage)]);
   if (!(await pushAllowed(vaultRoot))) throw new Error("a held-back scoped commit is on the branch");
   await git(vaultRoot, ["push"]);
   return { synced: false, conflict: true, conflictPath };
@@ -232,7 +239,7 @@ export async function commitAndPushLocked(
     if (!(await hasStagedChanges(vaultRoot))) {
       return { synced: true };
     }
-    await git(vaultRoot, ["commit", "-m", message]);
+    await git(vaultRoot, ["commit", "-m", commitText(message)]);
     // Its commit took the whole index, the owner writes included: their marks go.
     await clearOwnerWrites(vaultRoot);
   } catch (error) {
@@ -281,6 +288,8 @@ const NOT_SAVED_SYNC: SyncResult = { synced: false, saved: false, reason: "sync"
 const SCOPED_TRAILER = "Scoped-Token";
 /** Names one scoped write (a random id), so its commit is recognized exactly, also after a rebase. */
 const WRITE_TRAILER = "Scoped-Write";
+/** The form of that id (randomUUID): a scoped commit counts only with both trailers in this form. */
+const WRITE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -465,7 +474,13 @@ async function heldScopedCommits(vaultRoot: string): Promise<{ commit: string; w
   return stdout
     .split("\n")
     .map((line) => line.split("\0"))
-    .filter(([commit, token]) => commit !== undefined && commit !== "" && /^[a-z0-9-]+$/.test((token ?? "").trim()))
+    .filter(
+      ([commit, token, write]) =>
+        commit !== undefined &&
+        commit !== "" &&
+        /^[a-z0-9-]+$/.test((token ?? "").trim()) &&
+        WRITE_ID.test((write ?? "").trim()),
+    )
     .map(([commit, , write]) => ({ commit, write: (write ?? "").trim() }));
 }
 
