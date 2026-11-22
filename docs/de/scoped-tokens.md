@@ -181,11 +181,17 @@ Eingeschränkte Tokens nutzen einen **eigenen Listener auf einem eigenen Port**.
   Änderung zurück. Er antwortet mit `heldBack: true`, schreibt `scoped change held back: …` mit dem
   Commit oder dem Pfad ins Log und lehnt weitere eingeschränkte Schreibvorgänge ab
   (`denied:held-back`). Auch für den Haupt-Port committet und pusht er dann nicht: Der antwortet mit
-  `synced: false`, und seine Schreibvorgänge bleiben im Index und gehen mit dem nächsten Sync
-  hinaus. Der Server versucht es bei jedem Schreiben und Lesen erneut, eine kurze Sperre löst sich
-  also von selbst. Sonst entferne die Ursache (eine alte `.git/*.lock`-Datei, eine volle Platte)
-  oder die Änderung von Hand; `git status` und `git log @{upstream}..HEAD` im Vault des Servers
-  zeigen sie.
+  `synced: false`, und seine Schreibvorgänge bleiben im Index, als die des Besitzers vermerkt, und
+  gehen mit dem nächsten Sync hinaus. Das Aufräumen setzt nie eine Notiz zurück, die der Haupt-Port
+  geschrieben hat, auch nicht bei gleichen Bytes. Einen halb abgebrochenen Rebase bricht es erst
+  ab, nachdem es Änderungen anderer Schreiber gesichert hat, und schreibt sie danach zurück. Der
+  Server versucht es bei jedem Schreiben erneut, eine kurze Sperre löst sich also von selbst. Sonst
+  entferne die Ursache (eine alte `.git/*.lock`-Datei, eine volle Platte) oder die Änderung von
+  Hand; `git status` und `git log @{upstream}..HEAD` im Vault des Servers zeigen sie. Was ein
+  eingeschränkter Schreibvorgang im Index hat, vermerkt der Server in `.git/scoped-pending.json`:
+  Lösch diese Datei nicht allein, sondern nimm zuerst die gestagte Änderung zurück
+  (`git restore --staged <pfad>`, bei einer neuen Notiz `git rm --cached <pfad>`). Sonst nimmt der
+  nächste Commit des Haupt-Ports sie mit.
 - **Eine Notiz übernehmen.** Änderungen, die der Token macht, bevor deine Änderung den Server
   erreicht hat, führt Git auf deinem Gerät zusammen, auch in eine verschobene oder umbenannte
   Notiz. Um eine Notiz zu übernehmen, kopierst du ihren Text in eine neue eigene Notiz, oder du

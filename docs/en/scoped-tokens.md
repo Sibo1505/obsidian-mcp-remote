@@ -159,10 +159,15 @@ Scoped tokens use their **own listener on their own port**. The main listener (`
   process, or a full disk), the server holds the change back. It answers `heldBack: true`, logs
   `scoped change held back: …` with the commit or the path, refuses further scoped writes
   (`denied:held-back`), and does not commit or push for the main port either: that port answers
-  `synced: false`, and its writes stay staged and go out with the next sync. The server retries on
-  every write and read, so a short lock clears by itself. Otherwise remove the cause (a stale
-  `.git/*.lock` file, a full disk) or the change by hand; `git status` and
-  `git log @{upstream}..HEAD` in the vault on the server show it.
+  `synced: false`, and its writes stay staged, marked as the owner's, and go out with the next
+  sync. Cleaning up never puts back a note the main port wrote, even with the same bytes, and a
+  rebase left half-way is only aborted after changes of other writers are saved, then written
+  again. The server retries on every write, so a short lock clears by itself. Otherwise remove the
+  cause (a stale `.git/*.lock` file, a full disk) or the change by hand; `git status` and
+  `git log @{upstream}..HEAD` in the vault on the server show it. The server notes what a scoped
+  write has staged in `.git/scoped-pending.json`: do not delete that file on its own, first put
+  the staged change back (`git restore --staged <path>`, or `git rm --cached <path>` for a new
+  note), or the main port's next commit takes it along.
 - **Taking a note over.** Changes the token makes before your change has reached the server are
   merged by Git on your device, into a moved or renamed note as well. To take a note over, copy its
   text into a new note of your own, or remove the fields and sync first, and move or edit it
