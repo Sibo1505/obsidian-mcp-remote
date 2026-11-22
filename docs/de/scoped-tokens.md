@@ -89,27 +89,8 @@ Eingeschränkte Tokens nutzen einen **eigenen Listener auf einem eigenen Port**.
   - **nur eigene vorhandene Notizen** mit `modifyExisting: "own"`, dem Standard für
     `writeDir: "/"`. Ist der ganze Vault beschreibbar, legt ein Token Notizen überall an, ändert
     aber nur Notizen, die sein eigenes Frontmatter tragen. Mit `modifyExisting: "any"` darf er
-    mehr. Eigen ist eine Notiz, wenn sie alle `frontmatter`-Felder des Tokens mit genau diesem Wert
-    und Typ trägt (`false` ist nicht `"false"`). Eine Notiz ohne Frontmatter, mit anderen Werten
-    oder mit Frontmatter, das kein gültiges YAML ist, gehört jemand anderem: `vault_write` und jedes
-    `vault_patch` lehnen sie ab (`denied:foreign-note`) und bitten den Client, eine neue Notiz
-    anzulegen und sie zu verlinken. Der Server liest die vorhandene Notiz, ohne einem Symlink zu
-    folgen, und nur bis 2 MB. Prüfung, Schreiben und Commit laufen unter einer Sperre, also kann
-    kein Pull zwischen Prüfung und Schreiben eine andere Fassung der Notiz einspielen. Eine Änderung
-    eines anderen Geräts, die der Server noch nicht gezogen hat, führt Git beim Commit des Tokens
-    zusammen. Dieses Ergebnis prüft der Server, bevor er pusht. Würde die Änderung in einem anderen
-    Pfad landen (ein anderes Gerät hat die Notiz verschoben oder umbenannt, auch in einen gesperrten
-    Ordner oder aus `writeDir` hinaus) oder trägt die zusammengeführte Notiz bei `"own"` die Felder
-    des Tokens nicht mehr, bleibt die Notiz, wie das andere Gerät sie hinterlassen hat. Die Fassung
-    des Tokens wird dann eine Konfliktkopie neben dem angefragten Pfad (siehe Konflikte).
-    Änderungen, die der Token macht, bevor deine Änderung den Server erreicht hat, führt Git auf
-    deinem Gerät zusammen, auch in eine verschobene oder umbenannte Notiz. Um eine Notiz zu
-    übernehmen, kopierst du ihren Text in eine neue eigene Notiz, oder du entfernst die Felder und
-    synchronisierst zuerst und verschiebst oder bearbeitest sie danach. Eine Notiz, die der Token
-    angelegt hat, bleibt seine, solange sie diese Felder trägt, auch wenn jemand anderes
-    hineingeschrieben hat; entferne die Felder, bevor du in so eine Notiz schreibst. Gib jedem Token
-    eigene Feldwerte (zum Beispiel seinen Namen): Tokens mit denselben Feldern können die Notizen
-    des anderen ändern;
+    mehr. Was als eigen zählt und was passiert, wenn ein anderes Gerät so eine Notiz ändert oder
+    verschiebt: siehe [Eigene Notizen und andere Geräte](#eigene-notizen-und-andere-geräte);
   - höchstens 200 KB (UTF-8) pro Notiz, bei `vault_patch` für das Ergebnis;
   - kein Frontmatter, das eine Liste oder ein Mapping über einen YAML-Alias (`*name`) wiederverwendet,
     und keines mit mehr als 10 000 Werten oder etwa 2 MB, wenn es ausgeschrieben wird (ein langer
@@ -122,8 +103,9 @@ Eingeschränkte Tokens nutzen einen **eigenen Listener auf einem eigenen Port**.
     sobald der Pfad die Prüfungen am Text besteht (Schreibordner, Sperrlisten, die Namen aller
     Teile, Länge) und die Notiz die Größengrenze; ein `vault_patch` zählt, sobald die Notiz gefunden
     und gelesen ist. Jede Ablehnung danach zählt mit: ein neuer Name, der nicht einfach ist, ein
-    Groß/klein-Zwilling, ein Symlink auf dem Weg, eine vorhandene Notiz, die der Token nicht
-    geschrieben hat, das Frontmatter, eine fehlende Überschrift, die Größe der geänderten Notiz.
+    Groß/klein-Zwilling, ein Symlink auf dem Weg, ein Schreiben, das auf einen anderen Schreiber
+    wartet (`vault-busy`), eine vorhandene Notiz, die der Token nicht geschrieben hat, das
+    Frontmatter, eine fehlende Überschrift, die Größe der geänderten Notiz.
 - **Markierte Notizen.** Nach jedem eingeschränkten Schreiben setzt der Server die
   `frontmatter`-Felder des Tokens und ergänzt seine `tags` in der fertigen Notiz, auch wenn ein
   Schreiben oder Patch sie entfernen wollte. Mit `modifyExisting: "own"` entscheiden diese Felder
@@ -134,7 +116,8 @@ Eingeschränkte Tokens nutzen einen **eigenen Listener auf einem eigenen Port**.
   denselben Regeln: Mit `modifyExisting: "own"` ersetzt eine Kopie nie eine Notiz, die der Token
   nicht geschrieben hat. Der Name wird vorher auf einen einfachen Namen gebracht
   (`My Idea.md` → `my-idea-conflict-….md`). Die Antwort sagt es: `synced: false`, `conflict: true`,
-  `conflictPath` und eine kurze `note` für den Client.
+  `conflictPath` und eine kurze `note` für den Client. Geht auch die Kopie nicht hinaus, bleibt
+  nichts (`saved: false`).
 - **Nachvollziehbar.** Der Commit-Text beginnt mit `<name>: vault_write <pfad>`,
   `<name>: vault_patch <pfad>` oder `<name>: conflict quarantined <pfad> as <kopie>`. Jede Anfrage schreibt
   eine Log-Zeile, nie mit Inhalt oder Token. Ein Werkzeug-Aufruf, der abgelehnt wird, bevor das
@@ -156,6 +139,41 @@ Eingeschränkte Tokens nutzen einen **eigenen Listener auf einem eigenen Port**.
 - **Im Zweifel zu.** Ist an den Einstellungen etwas ungültig, startet der eingeschränkte Listener
   nicht, und das Log nennt das Feld. Der Haupt-Listener läuft normal weiter. Es gibt nie einen
   Rückfall auf breitere Rechte.
+
+## Eigene Notizen und andere Geräte
+
+- **Was als eigen zählt.** Eigen ist eine Notiz, wenn sie alle `frontmatter`-Felder des Tokens mit
+  genau diesem Wert und Typ trägt (`false` ist nicht `"false"`). Eine Notiz ohne Frontmatter, mit
+  anderen Werten oder mit Frontmatter, das kein gültiges YAML ist, gehört jemand anderem:
+  `vault_write` und jedes `vault_patch` lehnen sie ab (`denied:foreign-note`) und bitten den
+  Client, eine neue Notiz anzulegen und sie zu verlinken.
+- **Eine Notiz, die der Token angelegt hat, bleibt seine**, solange sie diese Felder trägt, auch
+  wenn jemand anderes hineingeschrieben hat; entferne die Felder, bevor du in so eine Notiz
+  schreibst. Gib jedem Token eigene Feldwerte (zum Beispiel seinen Namen): Tokens mit denselben
+  Feldern können die Notizen des anderen ändern.
+- **Wie der Server prüft.** Er liest die vorhandene Notiz, ohne einem Symlink zu folgen, und nur bis
+  2 MB. Prüfung, Schreiben und Commit laufen unter einer Sperre, also kann kein Pull zwischen
+  Prüfung und Schreiben eine andere Fassung der Notiz einspielen. Der Commit des Tokens enthält nur
+  diese Notiz. Solange auf dem Server eine Änderung eines anderen Schreibers noch nicht committet
+  ist, wartet das Schreiben (`denied:vault-busy`, in einer Minute erneut versuchen), statt sie
+  mitzunehmen.
+- **Änderungen anderer Geräte.** Eine Änderung, die der Server noch nicht gezogen hat, führt Git
+  beim Commit des Tokens zusammen. Der Server prüft das Ergebnis, bevor er pusht: Würde die
+  Änderung in einem anderen Pfad landen (ein anderes Gerät hat die Notiz verschoben oder
+  umbenannt, auch in einen gesperrten Ordner oder aus `writeDir` hinaus) oder trägt die
+  zusammengeführte Notiz bei `"own"` die Felder des Tokens nicht mehr, bleibt die Notiz, wie das
+  andere Gerät sie hinterlassen hat. Die Fassung des Tokens wird dann eine Konfliktkopie neben dem
+  angefragten Pfad.
+- **Nichts wartet auf einen späteren Push.** Ein eingeschränktes Schreiben geht sofort hinaus oder
+  gar nicht. Scheitert der Commit, der Pull oder der Push, zum Beispiel weil der Remote nicht
+  erreichbar ist, nimmt der Server dieses Schreiben wieder zurück und antwortet mit
+  `synced: false`, `saved: false` und einer `note`; der Client kann es erneut versuchen. Ein Commit
+  des Tokens wartet also nie auf dem Server und geht später ungeprüft hinaus. Commits des
+  Haupt-Ports betrifft das nicht.
+- **Eine Notiz übernehmen.** Änderungen, die der Token macht, bevor deine Änderung den Server
+  erreicht hat, führt Git auf deinem Gerät zusammen, auch in eine verschobene oder umbenannte
+  Notiz. Um eine Notiz zu übernehmen, kopierst du ihren Text in eine neue eigene Notiz, oder du
+  entfernst die Felder und synchronisierst zuerst und verschiebst oder bearbeitest sie danach.
 
 ## Einstellungen
 

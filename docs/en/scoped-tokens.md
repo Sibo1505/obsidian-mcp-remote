@@ -76,25 +76,9 @@ Scoped tokens use their **own listener on their own port**. The main listener (`
     `realpath(vault/writeDir)`;
   - **only its own existing notes** with `modifyExisting: "own"`, the default for `writeDir: "/"`.
     With the whole vault writable, a token creates notes anywhere but changes only notes that carry
-    its own front matter. Set `modifyExisting: "any"` to allow more. A note is the token's own when
-    it carries every one of the token's `frontmatter` fields with exactly that value and type
-    (`false` is not `"false"`). A note without front matter, with other values, or with front
-    matter that is not valid YAML belongs to someone else: `vault_write` and every `vault_patch`
-    refuse it (`denied:foreign-note`) and ask the client to create a new note and link to it.
-    The server reads the existing note without following a symlink and only up to 2 MB, and the
-    check, the write and the commit run under one lock, so no pull can bring in another version of
-    the note between the check and the write. A change from another device that the server has not
-    pulled yet is merged by Git when the token's change is committed; the server checks that result
-    before it pushes. If the change would land in another path (another device moved or renamed the
-    note, also into a denied folder or out of `writeDir`) or, with `"own"`, the merged note no
-    longer carries the token's fields, the note stays as the other device left it, and the token's
-    version becomes a conflict copy next to the path it asked for (see Conflicts). Changes the token
-    makes before your change has reached the server are merged by Git on your device, into a moved
-    or renamed note as well. To take a note over, copy its text into a new note of your own, or
-    remove the fields and sync first, and move or edit it afterwards. A note the token created stays
-    its own as long as it carries these fields, also after someone else wrote into it; remove the
-    fields before you write into such a note. Give every token its own field values (its name, say):
-    tokens with the same fields can change each other's notes;
+    its own front matter. Set `modifyExisting: "any"` to allow more. What counts as its own, and
+    what happens when another device changes or moves such a note: see
+    [Own notes and other devices](#own-notes-and-other-devices);
   - at most 200 KB (UTF-8) per note; for `vault_patch` this is checked on the result;
   - no front matter that reuses a list or mapping through a YAML alias (`*name`), and none with
     more than 10 000 values or about 2 MB once written out (one long text reused through an alias
@@ -106,8 +90,8 @@ Scoped tokens use their **own listener on their own port**. The main listener (`
     its path passes the checks on the text (write folder, deny lists, the names of every part,
     length) and the note passes the size limit; a `vault_patch` counts once the note is found and
     read. Every refusal after that point counts too: a new name that is not plain, a case twin, a
-    symlink on the way, an existing note the token did not write, the front matter, a missing
-    heading, the size of the patched note.
+    symlink on the way, a write that waits for another writer (`vault-busy`), an existing note the
+    token did not write, the front matter, a missing heading, the size of the patched note.
 - **Marked notes.** After every scoped write, the server sets the token's `frontmatter` fields and
   adds its `tags` in the final note, even when a write or patch tried to remove them. With
   `modifyExisting: "own"` these fields also decide which existing notes the token may change later.
@@ -116,7 +100,8 @@ Scoped tokens use their **own listener on their own port**. The main listener (`
   version as `<name>-conflict-<yyyymmddhhmmss>.md` next to the path it asked for, under the same
   rules: with `modifyExisting: "own"` a copy never replaces a note the token did not write. The
   name is reduced to a plain one first (`My Idea.md` → `my-idea-conflict-….md`). The answer says
-  so: `synced: false`, `conflict: true`, `conflictPath` and a short `note` for the client.
+  so: `synced: false`, `conflict: true`, `conflictPath` and a short `note` for the client. If the
+  copy cannot go out either, nothing is kept (`saved: false`).
 - **Traceable.** The commit message starts with `<name>: vault_write <path>`,
   `<name>: vault_patch <path>` or `<name>: conflict quarantined <path> as <copy>`. Every request writes one
   log line, never content or the token. A tool call that is refused before its tool runs (invalid
@@ -138,6 +123,37 @@ Scoped tokens use their **own listener on their own port**. The main listener (`
 - **Fail closed.** If the scoped settings are invalid in any way, the scoped listener does not start
   and the log names the field. The main listener keeps running as before. There is never a fallback
   to wider access.
+
+## Own notes and other devices
+
+- **What counts as its own.** A note is the token's own when it carries every one of the token's
+  `frontmatter` fields with exactly that value and type (`false` is not `"false"`). A note without
+  front matter, with other values, or with front matter that is not valid YAML belongs to someone
+  else: `vault_write` and every `vault_patch` refuse it (`denied:foreign-note`) and ask the client
+  to create a new note and link to it.
+- **A note it created stays its own** as long as it carries these fields, also after someone else
+  wrote into it; remove the fields before you write into such a note. Give every token its own
+  field values (its name, say): tokens with the same fields can change each other's notes.
+- **How the server checks.** It reads the existing note without following a symlink and only up to
+  2 MB. The check, the write and the commit run under one lock, so no pull can bring in another
+  version of the note between the check and the write. The token's commit holds only that note.
+  While another writer's change on the server is not committed yet, the write waits
+  (`denied:vault-busy`, try again in a minute) instead of taking that change along.
+- **Changes from another device.** A change the server has not pulled yet is merged by Git when the
+  token's change is committed. The server checks the result before it pushes: if the change would
+  land in another path (another device moved or renamed the note, also into a denied folder or out
+  of `writeDir`) or, with `"own"`, the merged note no longer carries the token's fields, the note
+  stays as the other device left it, and the token's version becomes a conflict copy next to the
+  path it asked for.
+- **Nothing waits for a later push.** A scoped write goes out right away or not at all. If the
+  commit, the pull or the push fails, for example while the remote cannot be reached, the server
+  drops that write again and answers `synced: false`, `saved: false` and a `note`; the client may
+  try again. So a token's commit never waits on the server and later goes out unchecked. Commits
+  of the main port are not affected.
+- **Taking a note over.** Changes the token makes before your change has reached the server are
+  merged by Git on your device, into a moved or renamed note as well. To take a note over, copy its
+  text into a new note of your own, or remove the fields and sync first, and move or edit it
+  afterwards.
 
 ## Settings
 
