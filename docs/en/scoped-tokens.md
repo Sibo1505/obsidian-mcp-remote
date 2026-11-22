@@ -90,8 +90,9 @@ Scoped tokens use their **own listener on their own port**. The main listener (`
     its path passes the checks on the text (write folder, deny lists, the names of every part,
     length) and the note passes the size limit; a `vault_patch` counts once the note is found and
     read. Every refusal after that point counts too: a new name that is not plain, a case twin, a
-    symlink on the way, a write that waits for another writer (`vault-busy`), an existing note the
-    token did not write, the front matter, a missing heading, the size of the patched note.
+    symlink on the way, a write refused because another writer's change is open (`vault-busy`), an
+    existing note the token did not write, the front matter, a missing heading, the size of the
+    patched note.
 - **Marked notes.** After every scoped write, the server sets the token's `frontmatter` fields and
   adds its `tags` in the final note, even when a write or patch tried to remove them. With
   `modifyExisting: "own"` these fields also decide which existing notes the token may change later.
@@ -137,8 +138,11 @@ Scoped tokens use their **own listener on their own port**. The main listener (`
 - **How the server checks.** It reads the existing note without following a symlink and only up to
   2 MB. The check, the write and the commit run under one lock, so no pull can bring in another
   version of the note between the check and the write. The token's commit holds only that note.
-  While another writer's change on the server is not committed yet, the write waits
-  (`denied:vault-busy`, try again in a minute) instead of taking that change along.
+  While another writer's change on the server is not committed yet, the server refuses the write
+  (`denied:vault-busy`, try again in a minute) instead of taking that change along, and it refuses
+  a path Git ignores (`denied:git-ignored`). `git status` in the vault on the server shows what is
+  open (the log line `vault-busy pending=<n> first=<path>` names the first path); the next write on
+  the main port commits it, or clear it by hand.
 - **Changes from another device.** A change the server has not pulled yet is merged by Git when the
   token's change is committed. The server checks the result before it pushes: if the change would
   land in another path (another device moved or renamed the note, also into a denied folder or out
@@ -147,9 +151,18 @@ Scoped tokens use their **own listener on their own port**. The main listener (`
   path it asked for.
 - **Nothing waits for a later push.** A scoped write goes out right away or not at all. If the
   commit, the pull or the push fails, for example while the remote cannot be reached, the server
-  drops that write again and answers `synced: false`, `saved: false` and a `note`; the client may
-  try again. So a token's commit never waits on the server and later goes out unchecked. Commits
-  of the main port are not affected.
+  undoes that write and answers `synced: false`, `saved: false` and a `note`; the client may try
+  again. Every commit of a token carries the trailer `Scoped-Token: <name>`, and no commit or push
+  on the server, the main port's included, takes such a commit along while the remote does not
+  have it: the server drops it first, also after a restart.
+- **When undoing fails too** (a second Git error, for example a ref lock left by another Git
+  process, or a full disk), the server holds the change back. It answers `heldBack: true`, logs
+  `scoped change held back: …` with the commit or the path, refuses further scoped writes
+  (`denied:held-back`), and does not commit or push for the main port either: that port answers
+  `synced: false`, and its writes stay staged and go out with the next sync. The server retries on
+  every write and read, so a short lock clears by itself. Otherwise remove the cause (a stale
+  `.git/*.lock` file, a full disk) or the change by hand; `git status` and
+  `git log @{upstream}..HEAD` in the vault on the server show it.
 - **Taking a note over.** Changes the token makes before your change has reached the server are
   merged by Git on your device, into a moved or renamed note as well. To take a note over, copy its
   text into a new note of your own, or remove the fields and sync first, and move or edit it

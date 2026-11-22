@@ -103,9 +103,10 @@ Eingeschränkte Tokens nutzen einen **eigenen Listener auf einem eigenen Port**.
     sobald der Pfad die Prüfungen am Text besteht (Schreibordner, Sperrlisten, die Namen aller
     Teile, Länge) und die Notiz die Größengrenze; ein `vault_patch` zählt, sobald die Notiz gefunden
     und gelesen ist. Jede Ablehnung danach zählt mit: ein neuer Name, der nicht einfach ist, ein
-    Groß/klein-Zwilling, ein Symlink auf dem Weg, ein Schreiben, das auf einen anderen Schreiber
-    wartet (`vault-busy`), eine vorhandene Notiz, die der Token nicht geschrieben hat, das
-    Frontmatter, eine fehlende Überschrift, die Größe der geänderten Notiz.
+    Groß/klein-Zwilling, ein Symlink auf dem Weg, ein Schreiben, das abgelehnt wird, weil eine
+    Änderung eines anderen Schreibers offen ist (`vault-busy`), eine vorhandene Notiz, die der
+    Token nicht geschrieben hat, das Frontmatter, eine fehlende Überschrift, die Größe der
+    geänderten Notiz.
 - **Markierte Notizen.** Nach jedem eingeschränkten Schreiben setzt der Server die
   `frontmatter`-Felder des Tokens und ergänzt seine `tags` in der fertigen Notiz, auch wenn ein
   Schreiben oder Patch sie entfernen wollte. Mit `modifyExisting: "own"` entscheiden diese Felder
@@ -155,8 +156,11 @@ Eingeschränkte Tokens nutzen einen **eigenen Listener auf einem eigenen Port**.
   2 MB. Prüfung, Schreiben und Commit laufen unter einer Sperre, also kann kein Pull zwischen
   Prüfung und Schreiben eine andere Fassung der Notiz einspielen. Der Commit des Tokens enthält nur
   diese Notiz. Solange auf dem Server eine Änderung eines anderen Schreibers noch nicht committet
-  ist, wartet das Schreiben (`denied:vault-busy`, in einer Minute erneut versuchen), statt sie
-  mitzunehmen.
+  ist, lehnt der Server das Schreiben ab (`denied:vault-busy`, in einer Minute erneut versuchen),
+  statt sie mitzunehmen. Einen Pfad, den Git ignoriert, lehnt er ebenso ab (`denied:git-ignored`).
+  Was offen ist, zeigt `git status` im Vault des Servers (die Log-Zeile
+  `vault-busy pending=<n> first=<pfad>` nennt den ersten Pfad). Den Rest committet der nächste
+  Schreibvorgang auf dem Haupt-Port, oder du räumst von Hand auf.
 - **Änderungen anderer Geräte.** Eine Änderung, die der Server noch nicht gezogen hat, führt Git
   beim Commit des Tokens zusammen. Der Server prüft das Ergebnis, bevor er pusht: Würde die
   Änderung in einem anderen Pfad landen (ein anderes Gerät hat die Notiz verschoben oder
@@ -167,9 +171,21 @@ Eingeschränkte Tokens nutzen einen **eigenen Listener auf einem eigenen Port**.
 - **Nichts wartet auf einen späteren Push.** Ein eingeschränktes Schreiben geht sofort hinaus oder
   gar nicht. Scheitert der Commit, der Pull oder der Push, zum Beispiel weil der Remote nicht
   erreichbar ist, nimmt der Server dieses Schreiben wieder zurück und antwortet mit
-  `synced: false`, `saved: false` und einer `note`; der Client kann es erneut versuchen. Ein Commit
-  des Tokens wartet also nie auf dem Server und geht später ungeprüft hinaus. Commits des
-  Haupt-Ports betrifft das nicht.
+  `synced: false`, `saved: false` und einer `note`; der Client kann es erneut versuchen. Jeder
+  Commit eines Tokens trägt den Trailer `Scoped-Token: <name>`, und kein Commit oder Push auf dem
+  Server, auch keiner des Haupt-Ports, nimmt so einen Commit mit, solange der Remote ihn nicht hat:
+  Der Server verwirft ihn vorher, auch nach einem Neustart. Ein Commit des Tokens bleibt also nie
+  auf dem Server liegen, um später ungeprüft hinauszugehen.
+- **Wenn auch das Zurücknehmen scheitert** (ein zweiter Git-Fehler, zum Beispiel eine Ref-Sperre,
+  die ein anderer Git-Prozess hinterlassen hat, oder eine volle Platte), hält der Server die
+  Änderung zurück. Er antwortet mit `heldBack: true`, schreibt `scoped change held back: …` mit dem
+  Commit oder dem Pfad ins Log und lehnt weitere eingeschränkte Schreibvorgänge ab
+  (`denied:held-back`). Auch für den Haupt-Port committet und pusht er dann nicht: Der antwortet mit
+  `synced: false`, und seine Schreibvorgänge bleiben im Index und gehen mit dem nächsten Sync
+  hinaus. Der Server versucht es bei jedem Schreiben und Lesen erneut, eine kurze Sperre löst sich
+  also von selbst. Sonst entferne die Ursache (eine alte `.git/*.lock`-Datei, eine volle Platte)
+  oder die Änderung von Hand; `git status` und `git log @{upstream}..HEAD` im Vault des Servers
+  zeigen sie.
 - **Eine Notiz übernehmen.** Änderungen, die der Token macht, bevor deine Änderung den Server
   erreicht hat, führt Git auf deinem Gerät zusammen, auch in eine verschobene oder umbenannte
   Notiz. Um eine Notiz zu übernehmen, kopierst du ihren Text in eine neue eigene Notiz, oder du
