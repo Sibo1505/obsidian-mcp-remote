@@ -200,12 +200,14 @@ Eingeschränkte Tokens nutzen einen **eigenen Listener auf einem eigenen Port**.
 
 ## Bekannte Grenzen
 
-Jeder dieser Fälle braucht mindestens zwei Git-Fehler auf dem Server hintereinander (eine Sperre,
-die ein anderer Git-Prozess hinterlassen hat, eine volle Platte, ein E/A-Fehler). Ein
-eingeschränkter Token kann keinen davon auslösen. In jedem Fall steht im Server-Log eine Zeile
-`scoped change held back: …` oder `git pull --rebase failed: …`. Schau dir vor dem nächsten Sync
-`git status` und `git log @{upstream}..HEAD` im Vault des Servers an und nimm zurück, was nicht
-von dir ist (`git restore --staged <pfad>`, `git rm --cached <pfad>`, dann die Datei selbst).
+Ein eingeschränkter Token kann keinen dieser Fälle auslösen. Die ersten drei und der fünfte
+brauchen mindestens zwei Git-Fehler auf dem Server hintereinander (eine Sperre, die ein anderer
+Git-Prozess hinterlassen hat, eine volle Platte, ein E/A-Fehler). Der vierte braucht einen, der
+letzte einen Betreiber. In jedem Fall steht im Server-Log eine Zeile `scoped change held back: …`
+oder `git pull --rebase failed: …`. Jeder Schreibvorgang eines Clients synct, halte deshalb zuerst
+den Server an. Schau dir dann `git status` und `git log @{upstream}..HEAD` im Vault des Servers an
+und nimm zurück, was nicht von dir ist (`git restore --staged <pfad>`, `git rm --cached <pfad>`,
+dann die Datei selbst).
 
 - **Die Notiz, die ein halber Rebase wiederholt.** Schreibt der Haupt-Port genau diese Notiz, nimmt
   der Abbruch des Rebase seinen Write mit, und die zurückgehaltene Fassung des Tokens kann im
@@ -217,15 +219,25 @@ von dir ist (`git restore --staged <pfad>`, `git rm --cached <pfad>`, dann die D
   gesperrten Ordner.
 - **Ein Besitzer-Vermerk, der die Änderung des Besitzers überdauert.** Ein Write des Haupt-Ports
   in einem Fehlerzustand vermerkt seine Notiz. Wird danach auch die nächste Änderung des Tokens an
-  dieser Notiz zurückgehalten, kann das Aufräumen sie für den nächsten Commit des Haupt-Ports
-  gestagt lassen.
-- **Ein Abbruch, der Erfolg meldet.** Bei gesperrtem Branch-Ref kann `git rebase --abort` ohne
-  Fehler enden und den Checkout auf einem abgelösten HEAD lassen. Dann synct der Server nicht mehr
-  (der Haupt-Port antwortet `synced: false`, der Token bekommt `vault-busy`), und Commits bleiben
-  auf dem abgelösten HEAD; hinaus geht nichts. Sieh sie dir an und geh dann zurück auf den Branch
-  (`git switch <branch>`); push den abgelösten HEAD nicht so, wie er ist.
+  dieser Notiz zurückgehalten, kann das Aufräumen sie gestagt lassen. Der nächste Commit des
+  Haupt-Ports nimmt sie dann ohne Trailer mit hinaus, auch in eine Notiz, die ein anderes Gerät in
+  einen gesperrten Ordner verschoben hat.
+- **Ein Abbruch, der Erfolg meldet.** Ist der Branch-Ref gesperrt, während ein normaler Konflikt
+  abgebrochen wird (ein Git-Fehler; das war schon vor den eingeschränkten Tokens so), kann
+  `git rebase --abort` ohne Fehler enden und den Checkout auf einem abgelösten HEAD lassen. Dann
+  synct der Server nicht mehr: Der Haupt-Port antwortet `synced: false`, ein eingeschränktes
+  Schreiben wird nicht gespeichert (`reason: "sync"`, `vault-busy` nur, wenn etwas gestagt
+  geblieben ist), und Commits sammeln sich auf dem abgelösten HEAD; hinaus geht nichts. Halte den
+  Server an, sichere diese Commits (`git branch rescue`), geh zurück auf den Branch
+  (`git switch <branch>`; Dateien, die nur in diesen Commits stehen, verschwinden dabei von der
+  Platte) und übernimm, was von dir ist (`git cherry-pick <commit>`). Push den abgelösten HEAD
+  nicht so, wie er ist.
 - **Andere Schreibweisen eines Pfads.** Der Schutz für die eigene Notiz des Haupt-Ports vergleicht
   den Pfad als Text: `inbox//x.md` oder `./inbox/x.md` gilt nicht als `inbox/x.md`.
+- **Kopierte Token-Commits.** Ein Commit auf dem Server, dessen Text mit beiden Trailern endet
+  (`Scoped-Token`, `Scoped-Write`), gilt als Commit eines Tokens und wird vor dem nächsten Push
+  verworfen, etwa ein Token-Commit, den man mit `git cherry-pick`, `git commit -C` oder
+  `git commit --amend` kopiert. Kopier auf dem Server keine Token-Commits.
 
 ## Einstellungen
 

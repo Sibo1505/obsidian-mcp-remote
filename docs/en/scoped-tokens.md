@@ -177,12 +177,13 @@ Scoped tokens use their **own listener on their own port**. The main listener (`
 
 ## Known limits
 
-Each of these needs at least two Git errors on the server in a row (a lock left by another Git
-process, a full disk, an I/O error); a scoped token cannot cause any of them. In each case the
-server log has a line `scoped change held back: …` or `git pull --rebase failed: …`. Before the
-next sync, look at `git status` and `git log @{upstream}..HEAD` in the vault on the server and
-put back what is not yours (`git restore --staged <path>`, `git rm --cached <path>`, then the
-file itself).
+A scoped token cannot cause any of these. The first three and the fifth need at least two Git
+errors on the server in a row (a lock left by another Git process, a full disk, an I/O error);
+the fourth needs one, and the last one needs an operator. In each case the server log has a line
+`scoped change held back: …` or `git pull --rebase failed: …`. Every write of a client syncs, so
+stop the server first; then look at `git status` and `git log @{upstream}..HEAD` in the vault on
+the server and put back what is not yours (`git restore --staged <path>`, `git rm --cached
+<path>`, then the file itself).
 
 - **The note a half-way rebase replays.** If the main port writes exactly that note, aborting the
   rebase takes its write along, and the token's held-back version can take its place in the main
@@ -193,14 +194,22 @@ file itself).
   in a denied folder.
 - **An owner mark that outlives the owner's change.** The main port's write during one held-back
   state marks its note. If the token's next change of that note is held back as well, cleaning
-  up can leave it staged for the main port's next commit.
-- **An abort that reports success.** With the branch ref locked, `git rebase --abort` can end
-  without an error and leave the checkout on a detached HEAD. Then the server stops syncing (the
-  main port answers `synced: false`, the token gets `vault-busy`) and commits stay on the detached
-  HEAD; nothing goes out. Look at them, then go back to the branch (`git switch <branch>`); do not
-  push the detached HEAD as it is.
+  up can leave it staged, and the main port's next commit takes it out without a trailer, also
+  into a note another device has moved into a denied folder.
+- **An abort that reports success.** If the branch ref is locked while a normal conflict is
+  aborted (one Git error; this was so before scoped tokens), `git rebase --abort` can end without
+  an error and leave the checkout on a detached HEAD. Then the server stops syncing: the main port
+  answers `synced: false`, a scoped write is not saved (`reason: "sync"`, `vault-busy` only if
+  something stayed staged), and commits pile up on the detached HEAD; nothing goes out. With the
+  server stopped, keep those commits (`git branch rescue`), go back to the branch
+  (`git switch <branch>`; files that only those commits have leave the disk with it) and take over
+  what is yours (`git cherry-pick <commit>`). Do not push the detached HEAD as it is.
 - **Other spellings of a path.** The protection for the main port's own note compares the path as
   text: `inbox//x.md` or `./inbox/x.md` is not recognized as `inbox/x.md`.
+- **Copied token commits.** A commit on the server whose text ends with both trailers
+  (`Scoped-Token`, `Scoped-Write`) counts as a token's commit and is dropped before the next push,
+  for example a token commit copied with `git cherry-pick`, `git commit -C` or `git commit
+  --amend`. Do not copy token commits on the server.
 
 ## Settings
 
