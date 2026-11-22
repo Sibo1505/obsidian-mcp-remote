@@ -10,7 +10,13 @@ import { vaultListSchema } from "../tools/vault-list.js";
 import { searchQuerySchema } from "../tools/search-query.js";
 import { hasBlockedSegment, listDir, resolveInVault, statNote } from "../vault/fs.js";
 import { SCOPED_SEARCH_LIMITS, SearchLimitError } from "../vault/search.js";
-import { commitAndPushLocked, withGitLock, type CommitOptions, type SyncResult } from "../vault/git.js";
+import {
+  commitAndPushChecked,
+  uncommittedChanges,
+  withGitLock,
+  type CheckedCommitOptions,
+  type SyncResult,
+} from "../vault/git.js";
 import type { ScopedToken } from "./config.js";
 import {
   MAX_DEPTH_BELOW_WRITE_DIR,
@@ -168,7 +174,7 @@ function compactUtcStamp(date = new Date()): string {
  * that names the token. The stem is reduced to the names a scoped token may create, so an existing
  * note like "My Note.md" gets "my-note-conflict-….md".
  */
-function commitOptions(ctx: ScopedToolContext): CommitOptions {
+function commitOptions(ctx: ScopedToolContext): CheckedCommitOptions {
   const { writeDir, writeDeny, name } = ctx.token;
   return {
     quarantine: async (relativePath, ourContent) => {
@@ -202,15 +208,40 @@ function commitOptions(ctx: ScopedToolContext): CommitOptions {
   };
 }
 
-/** For a conflict, what happened to the note and where the token's version went. */
-function conflictNote(notePath: string, sync: SyncResult): { note?: string } {
-  if (!sync.conflict) return {};
-  return {
-    note: sync.conflictPath
-      ? `${notePath} was changed, moved or taken over on another device meanwhile and stays as it is there; ` +
-        `this version was saved as ${sync.conflictPath}`
-      : `${notePath} was changed on another device meanwhile, and this version could not be saved; read the note again`,
-  };
+/** What happened to the note and the token's version, when it did not simply go out. */
+function syncNote(notePath: string, sync: SyncResult): { note?: string } {
+  if (sync.conflict && sync.conflictPath) {
+    return {
+      note:
+        `${notePath} was changed, moved or taken over on another device meanwhile and stays as it is there; ` +
+        `this version was saved as ${sync.conflictPath}`,
+    };
+  }
+  if (sync.saved === false) {
+    const why = sync.conflict ? "it changed on another device meanwhile, and the server" : "the server";
+    return {
+      note: `${notePath} was not saved: ${why} could not commit and push this version right away (the remote may be unreachable); nothing changed, try again later`,
+    };
+  }
+  return {};
+}
+
+/**
+ * A scoped write commits only its own note and may drop it again (see commitAndPushChecked). So it
+ * waits while another writer's change is not committed yet, and never takes over a file Git does
+ * not track: it would otherwise commit or delete what is not its own.
+ */
+async function checkNothingPending(vault: string, notePath: string): Promise<void> {
+  const pending = await uncommittedChanges(vault, notePath);
+  if (pending === "other-changes") {
+    throw new ScopedDenied(
+      "vault-busy",
+      `Not written: the server has changes of another writer that are not committed yet; try again in a minute`,
+    );
+  }
+  if (pending === "untracked-path") {
+    throw new ScopedDenied("vault-busy", `Not written: ${JSON.stringify(notePath)} holds a file that Git does not track`);
+  }
 }
 
 function enforce(ctx: ScopedToolContext, text: string, source: string): string {
@@ -267,12 +298,13 @@ export function registerScopedTools(server: McpServer, ctx: ScopedToolContext): 
         // From the look at the note on disk to the commit under the git lock: no pull can bring in
         // another device's version of the note between the check and the write.
         const sync = await withGitLock(async () => {
+          await checkNothingPending(vault, input.path);
           const target = await resolveWriteTarget(vault, writeDir, inner, { createDirs: true });
           await checkOwnIfExists(ctx, target, input.path);
           await writeFileNoFollow(target, output);
-          return commitAndPushLocked(vault, input.path, `${ctx.token.name}: vault_write ${input.path}`, commitOptions(ctx));
+          return commitAndPushChecked(vault, input.path, `${ctx.token.name}: vault_write ${input.path}`, commitOptions(ctx));
         });
-        return { path: input.path, written: true, ...sync, ...conflictNote(input.path, sync) };
+        return { path: input.path, written: sync.saved !== false, ...sync, ...syncNote(input.path, sync) };
       }),
   );
 
@@ -284,6 +316,7 @@ export function registerScopedTools(server: McpServer, ctx: ScopedToolContext): 
         const inner = checkWritePath(writeDir, writeDeny, input.path);
         // Read, check, patch, write and commit under the git lock (see vault_write).
         const sync = await withGitLock(async () => {
+          await checkNothingPending(vault, input.path);
           const target = await resolveWriteTarget(vault, writeDir, inner, { createDirs: false });
           const current = await readForChange(target, input.path);
           consumeWrite(ctx);
@@ -299,9 +332,9 @@ export function registerScopedTools(server: McpServer, ctx: ScopedToolContext): 
           const output = enforce(ctx, patched, input.path);
           checkNoteSize(output);
           await writeFileNoFollow(target, output);
-          return commitAndPushLocked(vault, input.path, `${ctx.token.name}: vault_patch ${input.path}`, commitOptions(ctx));
+          return commitAndPushChecked(vault, input.path, `${ctx.token.name}: vault_patch ${input.path}`, commitOptions(ctx));
         });
-        return { path: input.path, patched: true, ...sync, ...conflictNote(input.path, sync) };
+        return { path: input.path, patched: sync.saved !== false, ...sync, ...syncNote(input.path, sync) };
       }),
   );
 
