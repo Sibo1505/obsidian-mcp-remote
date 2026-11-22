@@ -159,12 +159,14 @@ Scoped tokens use their **own listener on their own port**. The main listener (`
   process, or a full disk), the server holds the change back. It answers `heldBack: true`, logs
   `scoped change held back: …` with the commit or the path, refuses further scoped writes
   (`denied:held-back`), and does not commit or push for the main port either: that port answers
-  `synced: false`, and its writes stay staged, marked as the owner's, and go out with the next
-  sync. Cleaning up never puts back a note the main port wrote, even with the same bytes, and a
-  rebase left half-way is only aborted after changes of other writers are saved, then written
-  again. The server retries on every write, so a short lock clears by itself. Otherwise remove the
-  cause (a stale `.git/*.lock` file, a full disk) or the change by hand; `git status` and
-  `git log @{upstream}..HEAD` in the vault on the server show it. The server notes what a scoped
+  `synced: false`, and its writes stay staged for the next sync. Cleaning up leaves alone the
+  note the main port is writing and the notes it wrote while the change was held back, even with
+  the same bytes, and it aborts a rebase left half-way only after saving changes of other writers
+  to other notes, which it writes again afterwards. A few cases with two or more Git errors in a
+  row are not covered: see [Known limits](#known-limits). The server retries on every write, so a
+  short lock clears by itself. Otherwise remove the cause (a stale `.git/*.lock` file, a full
+  disk) or the change by hand; `git status` and `git log @{upstream}..HEAD` in the vault on the
+  server show it. The server notes what a scoped
   write has staged in `.git/scoped-pending.json`: do not delete that file on its own, first put
   the staged change back (`git restore --staged <path>`, or `git rm --cached <path>` for a new
   note), or the main port's next commit takes it along.
@@ -172,6 +174,33 @@ Scoped tokens use their **own listener on their own port**. The main listener (`
   merged by Git on your device, into a moved or renamed note as well. To take a note over, copy its
   text into a new note of your own, or remove the fields and sync first, and move or edit it
   afterwards.
+
+## Known limits
+
+Each of these needs at least two Git errors on the server in a row (a lock left by another Git
+process, a full disk, an I/O error); a scoped token cannot cause any of them. In each case the
+server log has a line `scoped change held back: …` or `git pull --rebase failed: …`. Before the
+next sync, look at `git status` and `git log @{upstream}..HEAD` in the vault on the server and
+put back what is not yours (`git restore --staged <path>`, `git rm --cached <path>`, then the
+file itself).
+
+- **The note a half-way rebase replays.** If the main port writes exactly that note, aborting the
+  rebase takes its write along, and the token's held-back version can take its place in the main
+  port's next commit.
+- **A change the rebase moved.** If a rebase stops after it carried the token's change into a
+  moved note and aborting then fails several times, cleaning up can keep that change staged as if
+  another writer had made it; the main port's next commit then takes it into the moved note, also
+  in a denied folder.
+- **An owner mark that outlives the owner's change.** The main port's write during one held-back
+  state marks its note. If the token's next change of that note is held back as well, cleaning
+  up can leave it staged for the main port's next commit.
+- **An abort that reports success.** With the branch ref locked, `git rebase --abort` can end
+  without an error and leave the checkout on a detached HEAD. Then the server stops syncing (the
+  main port answers `synced: false`, the token gets `vault-busy`) and commits stay on the detached
+  HEAD; nothing goes out. Look at them, then go back to the branch (`git switch <branch>`); do not
+  push the detached HEAD as it is.
+- **Other spellings of a path.** The protection for the main port's own note compares the path as
+  text: `inbox//x.md` or `./inbox/x.md` is not recognized as `inbox/x.md`.
 
 ## Settings
 
