@@ -12,6 +12,7 @@ import { hasBlockedSegment, listDir, resolveInVault, statNote } from "../vault/f
 import { SCOPED_SEARCH_LIMITS, SearchLimitError } from "../vault/search.js";
 import {
   commitAndPushChecked,
+  releaseHeldBack,
   uncommittedChanges,
   withGitLock,
   type CheckedCommitOptions,
@@ -177,6 +178,7 @@ function compactUtcStamp(date = new Date()): string {
 function commitOptions(ctx: ScopedToolContext): CheckedCommitOptions {
   const { writeDir, writeDeny, name } = ctx.token;
   return {
+    scopedToken: name,
     quarantine: async (relativePath, ourContent) => {
       const parts = relativePath.split("/");
       const fileName = parts.pop()!;
@@ -217,6 +219,16 @@ function syncNote(notePath: string, sync: SyncResult): { note?: string } {
         `this version was saved as ${sync.conflictPath}`,
     };
   }
+  if (sync.heldBack) {
+    return {
+      note:
+        `${notePath} was not saved, and the server could not undo it either: it holds this change back and ` +
+        `does not send it out; writes are refused until it is cleared (the server log says what is left)`,
+    };
+  }
+  if (sync.saved === false && sync.reason === "commit") {
+    return { note: `${notePath} was not saved: the server could not commit it (a Git error on the server); nothing changed` };
+  }
   if (sync.saved === false) {
     const why = sync.conflict ? "it changed on another device meanwhile, and the server" : "the server";
     return {
@@ -227,20 +239,38 @@ function syncNote(notePath: string, sync: SyncResult): { note?: string } {
 }
 
 /**
- * A scoped write commits only its own note and may drop it again (see commitAndPushChecked). So it
- * waits while another writer's change is not committed yet, and never takes over a file Git does
- * not track: it would otherwise commit or delete what is not its own.
+ * Before a scoped write, under the git lock. First what an earlier scoped write left behind because
+ * undoing it failed (releaseHeldBack): while that is there, nothing is written. Then the write
+ * commits only its own note and may drop it again (see commitAndPushChecked), so it is refused
+ * while another writer's change is not committed yet, and it never takes over a file Git does not
+ * track or a path Git ignores: it would otherwise commit or delete what is not its own. What is
+ * open goes to the server log only.
  */
-async function checkNothingPending(vault: string, notePath: string): Promise<void> {
-  const pending = await uncommittedChanges(vault, notePath);
-  if (pending === "other-changes") {
+async function checkNothingPending(ctx: ScopedToolContext, notePath: string): Promise<void> {
+  const vault = ctx.config.VAULT_PATH;
+  if (!(await releaseHeldBack(vault))) {
+    throw new ScopedDenied("held-back", "Not written: the server holds back an earlier change it could not undo; try again later");
+  }
+  let pending: Awaited<ReturnType<typeof uncommittedChanges>>;
+  try {
+    pending = await uncommittedChanges(vault, notePath);
+  } catch (error) {
+    // Git's own message names commands and server paths: the log gets it, the client a fixed text.
+    ctx.log(`scoped token=${ctx.token.name} git status failed: ${error instanceof Error ? error.message.split("\n").join(" ") : String(error)}`);
+    throw new ScopedDenied("vault-busy", "Not written: the server could not check its Git state; try again later");
+  }
+  if (pending?.reason === "other-changes") {
+    ctx.log(`scoped token=${ctx.token.name} vault-busy pending=${pending.count} first=${JSON.stringify(pending.first)}`);
     throw new ScopedDenied(
       "vault-busy",
       `Not written: the server has changes of another writer that are not committed yet; try again in a minute`,
     );
   }
-  if (pending === "untracked-path") {
+  if (pending?.reason === "untracked-path") {
     throw new ScopedDenied("vault-busy", `Not written: ${JSON.stringify(notePath)} holds a file that Git does not track`);
+  }
+  if (pending?.reason === "ignored-path") {
+    throw new ScopedDenied("git-ignored", `Not written: ${JSON.stringify(notePath)} is ignored by Git, so the server could not keep it`);
   }
 }
 
@@ -298,7 +328,7 @@ export function registerScopedTools(server: McpServer, ctx: ScopedToolContext): 
         // From the look at the note on disk to the commit under the git lock: no pull can bring in
         // another device's version of the note between the check and the write.
         const sync = await withGitLock(async () => {
-          await checkNothingPending(vault, input.path);
+          await checkNothingPending(ctx, input.path);
           const target = await resolveWriteTarget(vault, writeDir, inner, { createDirs: true });
           await checkOwnIfExists(ctx, target, input.path);
           await writeFileNoFollow(target, output);
@@ -316,7 +346,7 @@ export function registerScopedTools(server: McpServer, ctx: ScopedToolContext): 
         const inner = checkWritePath(writeDir, writeDeny, input.path);
         // Read, check, patch, write and commit under the git lock (see vault_write).
         const sync = await withGitLock(async () => {
-          await checkNothingPending(vault, input.path);
+          await checkNothingPending(ctx, input.path);
           const target = await resolveWriteTarget(vault, writeDir, inner, { createDirs: false });
           const current = await readForChange(target, input.path);
           consumeWrite(ctx);

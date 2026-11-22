@@ -157,7 +157,7 @@ test("R4: a write whose commit fails is undone and reported as not saved; the ne
           { written: first.written, synced: first.synced, saved: first.saved, conflict: first.conflict },
           { written: false, synced: false, saved: false, conflict: undefined },
         );
-        assert.match(String(first.note), /was not saved/);
+        assert.match(String(first.note), /was not saved: the server could not commit it/);
         assert.equal(await exists(path.join(vaultRoot, "inbox", "first.md")), false);
         assert.equal(await status(vaultRoot), "");
         await restore();
@@ -407,6 +407,202 @@ test("dropping touches only the token's note: a file another writer changes whil
         assert.equal(await status(vaultRoot), " M other.md\n");
         assert.equal(await unpushed(vaultRoot), "");
         await rm(hook, { force: true });
+      },
+      { vaultRoot },
+    );
+  });
+});
+
+// --- when undoing fails too (F-8, SEC-025): the change is held back, nothing takes it out ---
+
+/** Locks the server's branch ref, as another (or a crashed) Git process would: undoing then fails. */
+const lockRef = (repo: string) => path.join(repo, ".git", "refs", "heads", "main.lock");
+const sh = (file: string) => file.split(path.sep).join("/");
+
+/** A hook that runs `body` (shell). The returned function removes it. */
+async function hookWith(gitDir: string, name: string, body: string): Promise<() => Promise<void>> {
+  const hook = path.join(gitDir, "hooks", name);
+  await writeFile(hook, `#!/bin/sh\n${body}\n`);
+  await chmod(hook, 0o755);
+  return () => rm(hook, { force: true });
+}
+
+test("S8r: the push is refused and the ref is locked: the patch is held back, and no later push takes it out", async () => {
+  await withGitFixture(async (vaultRoot, otherClone) => {
+    await withScopedServer(
+      [wholeVault()],
+      async ({ baseUrl }) => {
+        assert.equal(json((await callTool(baseUrl, "vault_write", { path: "inbox/idea.md", content: IDEA })).text).synced, true);
+        const unhook = await hookWith(path.join(path.dirname(vaultRoot), "origin.git"), "pre-receive", `: > '${sh(lockRef(vaultRoot))}'\nexit 1`);
+
+        const result = json((await callTool(baseUrl, "vault_patch", { ...APPEND, path: "inbox/idea.md" })).text);
+        assert.deepEqual(
+          { patched: result.patched, synced: result.synced, saved: result.saved, heldBack: result.heldBack },
+          { patched: false, synced: false, saved: false, heldBack: true },
+        );
+        assert.match(String(result.note), /could not undo it either.*holds this change back/);
+        await unhook();
+
+        await withMainServer(vaultRoot, async (call) => {
+          // While the lock is there, the main port neither commits nor pushes.
+          assert.deepEqual(json((await call("vault_write", { path: "main.md", content: "# main\n" })).text), {
+            path: "main.md",
+            written: true,
+            synced: false,
+          });
+          await pullOther(otherClone);
+          assert.equal(await exists(path.join(otherClone, "main.md")), false);
+          // The lock goes away: the next write clears the held-back change first, then syncs as before.
+          await rm(lockRef(vaultRoot), { force: true });
+          assert.equal(json((await call("vault_write", { path: "main.md", content: "# main\n" })).text).synced, true);
+        });
+        await pullOther(otherClone);
+        assert.equal(await readFile(path.join(otherClone, "main.md"), "utf-8"), "# main\n");
+        assert.doesNotMatch(await readFile(path.join(otherClone, "inbox", "idea.md"), "utf-8"), /TOKEN-WAS-HERE/);
+        assert.equal(await unpushed(vaultRoot), "");
+        assert.equal(await status(vaultRoot), "");
+      },
+      { vaultRoot },
+    );
+  });
+});
+
+test("S6r / C6 V1: a rejected change whose undo fails is held back, not copied; it never reaches the denied folder", async () => {
+  await withGitFixture(async (vaultRoot, otherClone) => {
+    await withScopedServer(
+      [wholeVault()],
+      async ({ baseUrl }) => {
+        for (const note of ["inbox/idea.md", "inbox/keep.md"]) {
+          assert.equal(json((await callTool(baseUrl, "vault_write", { path: note, content: IDEA })).text).synced, true);
+        }
+        const moved = await otherDevice(otherClone, "inbox/idea.md", { removeFields: false, moveTo: "rules/idea.md" });
+        // Right after the rebase the ref is locked, so dropping the rejected commit fails.
+        const unhook = await hookWith(path.join(vaultRoot, ".git"), "post-rewrite", `: > '${sh(lockRef(vaultRoot))}'`);
+
+        const result = json((await callTool(baseUrl, "vault_patch", { ...APPEND, path: "inbox/idea.md" })).text);
+        assert.equal(result.heldBack, true, JSON.stringify(result));
+        assert.equal(result.conflictPath, undefined);
+        assert.equal(await unpushed(vaultRoot), "test-agent: vault_patch inbox/idea.md");
+        await unhook();
+        await rm(lockRef(vaultRoot), { force: true });
+
+        // The next scoped write and a main-port write: the held-back commit is dropped first.
+        assert.equal(json((await callTool(baseUrl, "vault_write", { path: "inbox/other.md", content: "x\n" })).text).synced, true);
+        await withMainServer(vaultRoot, async (call) => {
+          assert.equal(json((await call("vault_write", { path: "main.md", content: "# main\n" })).text).synced, true);
+        });
+        await pullOther(otherClone);
+        assert.equal(await readFile(path.join(otherClone, "rules", "idea.md"), "utf-8"), moved.text);
+        assert.doesNotMatch((await gitIn(otherClone, ["log", "--format=%s"])).stdout, /vault_patch inbox\/idea\.md/);
+      },
+      { vaultRoot },
+    );
+  });
+});
+
+test("C6 V2: a ref lock that a later commit would clear still never lets the copy go out on top of the rejected commit", async () => {
+  await withGitFixture(async (vaultRoot, otherClone) => {
+    await withScopedServer(
+      [wholeVault()],
+      async ({ baseUrl }) => {
+        for (const note of ["inbox/idea.md", "inbox/keep.md"]) {
+          assert.equal(json((await callTool(baseUrl, "vault_write", { path: note, content: IDEA })).text).synced, true);
+        }
+        const moved = await otherDevice(otherClone, "inbox/idea.md", { removeFields: false, moveTo: "rules/idea.md" });
+        const gitDir = path.join(vaultRoot, ".git");
+        const unlock = await hookWith(gitDir, "post-rewrite", `: > '${sh(lockRef(vaultRoot))}'`);
+        const unclear = await hookWith(gitDir, "pre-commit", `rm -f '${sh(lockRef(vaultRoot))}'`);
+
+        const result = json((await callTool(baseUrl, "vault_patch", { ...APPEND, path: "inbox/idea.md" })).text);
+        assert.equal(result.heldBack, true, JSON.stringify(result));
+        // No copy was committed on top of the rejected commit, and nothing went out.
+        assert.equal((await gitIn(vaultRoot, ["log", "-1", "--format=%s"])).stdout.trim(), "test-agent: vault_patch inbox/idea.md");
+        await pullOther(otherClone);
+        assert.equal(await readFile(path.join(otherClone, "rules", "idea.md"), "utf-8"), moved.text);
+        await unlock();
+        await unclear();
+        await rm(lockRef(vaultRoot), { force: true });
+        assert.equal(json((await callTool(baseUrl, "vault_write", { path: "inbox/other.md", content: "x\n" })).text).synced, true);
+        assert.equal(await unpushed(vaultRoot), "");
+      },
+      { vaultRoot },
+    );
+  });
+});
+
+test("after a restart: a token's commit left on the server (marked by its trailer) never goes out with the main port", async () => {
+  await withGitFixture(async (vaultRoot, otherClone) => {
+    // As if the server had stopped right after a scoped commit: nothing in memory knows about it.
+    await mkdir(path.join(vaultRoot, "inbox"), { recursive: true });
+    await writeFile(path.join(vaultRoot, "inbox", "crash.md"), "# TOKEN-WAS-HERE\n");
+    await gitIn(vaultRoot, ["add", "inbox/crash.md"]);
+    await gitIn(vaultRoot, ["commit", "-m", "test-agent: vault_write inbox/crash.md\n\nScoped-Token: test-agent"]);
+    await withMainServer(vaultRoot, async (call) => {
+      assert.equal(json((await call("vault_write", { path: "main.md", content: "# main\n" })).text).synced, true);
+    });
+    await pullOther(otherClone);
+    assert.equal(await exists(path.join(otherClone, "inbox", "crash.md")), false);
+    assert.equal(await exists(path.join(otherClone, "main.md")), true);
+    assert.equal(await exists(path.join(vaultRoot, "inbox", "crash.md")), false);
+  });
+});
+
+// --- small things (F-9, F-10, F-11) ---
+
+test("S3: an ignored file at the target path is refused before anything is written", async () => {
+  await withGitFixture(async (vaultRoot) => {
+    await withScopedServer(
+      [wholeVault()],
+      async ({ baseUrl }) => {
+        await writeFile(path.join(vaultRoot, ".gitignore"), "ignored.md\nignored/\n");
+        await writeFile(path.join(vaultRoot, "ignored.md"), "# ignored, not tracked\n");
+        const result = await callTool(baseUrl, "vault_write", { path: "ignored.md", content: "x\n" });
+        assert.equal(result.isError, true, result.text);
+        assert.match(result.text, /holds a file that Git does not track/);
+        assert.equal(await readFile(path.join(vaultRoot, "ignored.md"), "utf-8"), "# ignored, not tracked\n");
+
+        // F-10: an ignored path without a file: refused as well, with its own reason.
+        const folder = await callTool(baseUrl, "vault_write", { path: "ignored/new.md", content: "x\n" });
+        assert.equal(folder.isError, true, folder.text);
+        assert.match(folder.text, /is ignored by Git/);
+        assert.equal(await exists(path.join(vaultRoot, "ignored", "new.md")), false);
+      },
+      { vaultRoot },
+    );
+  });
+});
+
+test("S4: another writer changes the same note while the write is undone: that change stays", async () => {
+  await withGitFixture(async (vaultRoot) => {
+    await withScopedServer(
+      [wholeVault()],
+      async ({ baseUrl }) => {
+        assert.equal(json((await callTool(baseUrl, "vault_write", { path: "inbox/idea.md", content: IDEA })).text).synced, true);
+        const note = sh(path.join(vaultRoot, "inbox", "idea.md"));
+        const unhook = await hookWith(path.join(path.dirname(vaultRoot), "origin.git"), "pre-receive", `printf 'other writer\\n' > '${note}'\nexit 1`);
+        const result = json((await callTool(baseUrl, "vault_patch", { ...APPEND, path: "inbox/idea.md" })).text);
+        assert.deepEqual({ saved: result.saved, heldBack: result.heldBack }, { saved: false, heldBack: undefined });
+        assert.equal(await readFile(path.join(vaultRoot, "inbox", "idea.md"), "utf-8"), "other writer\n");
+        assert.equal(await status(vaultRoot), " M inbox/idea.md\n");
+        assert.equal(await unpushed(vaultRoot), "");
+        await unhook();
+      },
+      { vaultRoot },
+    );
+  });
+});
+
+test("F-9: vault-busy names how many paths are open and the first one in the server log, never to the client", async () => {
+  await withGitFixture(async (vaultRoot) => {
+    await withScopedServer(
+      [wholeVault()],
+      async ({ baseUrl, logs }) => {
+        await writeFile(path.join(vaultRoot, "staged.md"), "# staged\n");
+        await gitIn(vaultRoot, ["add", "staged.md"]);
+        const result = await callTool(baseUrl, "vault_write", { path: "inbox/n.md", content: "x\n" });
+        assert.equal(result.isError, true);
+        assert.doesNotMatch(result.text, /staged\.md/);
+        assert.ok(logs.some((l) => l.includes("vault-busy") && l.includes('pending=1 first="staged.md"')), JSON.stringify(logs));
       },
       { vaultRoot },
     );
