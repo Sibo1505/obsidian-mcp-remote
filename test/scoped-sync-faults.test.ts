@@ -465,3 +465,28 @@ test("N2r: a read aborts the rebase left half-way and keeps a file another write
     );
   });
 });
+
+test("N1s: putting back the moved path reports success but does nothing: the check of every path notices, held back", async () => {
+  await withGitFixture(async (vaultRoot, otherClone) => {
+    await withScopedServer(
+      [wholeVault()],
+      async ({ baseUrl }) => {
+        for (const note of ["inbox/idea.md", "inbox/keep.md"]) {
+          assert.equal(json((await callTool(baseUrl, "vault_write", { path: note, content: IDEA })).text).synced, true);
+        }
+        const moved = await moveOnOtherDevice(otherClone, "inbox/idea.md", "rules/idea.md");
+        ignoreGit(is("restore"), Infinity);
+        const result = json((await callTool(baseUrl, "vault_patch", { ...APPEND, path: "inbox/idea.md" })).text);
+        clearFaults();
+        assert.equal(result.heldBack, true, JSON.stringify(result));
+        await withMainServer(vaultRoot, async (call) => {
+          assert.equal(json(await call("vault_write", { path: "main.md", content: "# main\n" })).synced, true);
+        });
+        await gitIn(otherClone, ["pull", "--no-rebase", "--no-edit"]);
+        assert.equal(await readFile(path.join(otherClone, "rules", "idea.md"), "utf-8"), moved);
+        assert.equal(await status(vaultRoot), "");
+      },
+      { vaultRoot },
+    );
+  });
+});
