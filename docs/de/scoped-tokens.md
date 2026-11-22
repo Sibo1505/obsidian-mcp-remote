@@ -181,13 +181,14 @@ Eingeschränkte Tokens nutzen einen **eigenen Listener auf einem eigenen Port**.
   Änderung zurück. Er antwortet mit `heldBack: true`, schreibt `scoped change held back: …` mit dem
   Commit oder dem Pfad ins Log und lehnt weitere eingeschränkte Schreibvorgänge ab
   (`denied:held-back`). Auch für den Haupt-Port committet und pusht er dann nicht: Der antwortet mit
-  `synced: false`, und seine Schreibvorgänge bleiben im Index, als die des Besitzers vermerkt, und
-  gehen mit dem nächsten Sync hinaus. Das Aufräumen setzt nie eine Notiz zurück, die der Haupt-Port
-  geschrieben hat, auch nicht bei gleichen Bytes. Einen halb abgebrochenen Rebase bricht es erst
-  ab, nachdem es Änderungen anderer Schreiber gesichert hat, und schreibt sie danach zurück. Der
-  Server versucht es bei jedem Schreiben erneut, eine kurze Sperre löst sich also von selbst. Sonst
-  entferne die Ursache (eine alte `.git/*.lock`-Datei, eine volle Platte) oder die Änderung von
-  Hand; `git status` und `git log @{upstream}..HEAD` im Vault des Servers zeigen sie. Was ein
+  `synced: false`, und seine Schreibvorgänge bleiben für den nächsten Sync im Index. Das Aufräumen
+  lässt die Notiz in Ruhe, die der Haupt-Port gerade schreibt, und die Notizen, die er geschrieben
+  hat, während die Änderung zurückgehalten war, auch bei gleichen Bytes. Einen halb abgebrochenen
+  Rebase bricht es erst ab, nachdem es Änderungen anderer Schreiber an anderen Notizen gesichert
+  hat, und schreibt sie danach zurück. Einige Fälle mit zwei oder mehr Git-Fehlern hintereinander
+  deckt das nicht ab: siehe [Bekannte Grenzen](#bekannte-grenzen). Der Server versucht es bei jedem
+  Schreiben erneut, eine kurze Sperre löst sich also von selbst. Sonst entferne die Ursache (eine
+  alte `.git/*.lock`-Datei, eine volle Platte) oder die Änderung von Hand; `git status` und `git log @{upstream}..HEAD` im Vault des Servers zeigen sie. Was ein
   eingeschränkter Schreibvorgang im Index hat, vermerkt der Server in `.git/scoped-pending.json`:
   Lösch diese Datei nicht allein, sondern nimm zuerst die gestagte Änderung zurück
   (`git restore --staged <pfad>`, bei einer neuen Notiz `git rm --cached <pfad>`). Sonst nimmt der
@@ -196,6 +197,35 @@ Eingeschränkte Tokens nutzen einen **eigenen Listener auf einem eigenen Port**.
   erreicht hat, führt Git auf deinem Gerät zusammen, auch in eine verschobene oder umbenannte
   Notiz. Um eine Notiz zu übernehmen, kopierst du ihren Text in eine neue eigene Notiz, oder du
   entfernst die Felder und synchronisierst zuerst und verschiebst oder bearbeitest sie danach.
+
+## Bekannte Grenzen
+
+Jeder dieser Fälle braucht mindestens zwei Git-Fehler auf dem Server hintereinander (eine Sperre,
+die ein anderer Git-Prozess hinterlassen hat, eine volle Platte, ein E/A-Fehler). Ein
+eingeschränkter Token kann keinen davon auslösen. In jedem Fall steht im Server-Log eine Zeile
+`scoped change held back: …` oder `git pull --rebase failed: …`. Schau dir vor dem nächsten Sync
+`git status` und `git log @{upstream}..HEAD` im Vault des Servers an und nimm zurück, was nicht
+von dir ist (`git restore --staged <pfad>`, `git rm --cached <pfad>`, dann die Datei selbst).
+
+- **Die Notiz, die ein halber Rebase wiederholt.** Schreibt der Haupt-Port genau diese Notiz, nimmt
+  der Abbruch des Rebase seinen Write mit, und die zurückgehaltene Fassung des Tokens kann im
+  nächsten Commit des Haupt-Ports an ihre Stelle treten.
+- **Eine Änderung, die der Rebase verschoben hat.** Hält ein Rebase an, nachdem er die Änderung des
+  Tokens in eine verschobene Notiz getragen hat, und scheitert der Abbruch danach mehrmals, kann
+  das Aufräumen diese Änderung gestagt lassen, als stamme sie von einem anderen Schreiber. Der
+  nächste Commit des Haupt-Ports nimmt sie dann in die verschobene Notiz mit, auch in einem
+  gesperrten Ordner.
+- **Ein Besitzer-Vermerk, der die Änderung des Besitzers überdauert.** Ein Write des Haupt-Ports
+  in einem Fehlerzustand vermerkt seine Notiz. Wird danach auch die nächste Änderung des Tokens an
+  dieser Notiz zurückgehalten, kann das Aufräumen sie für den nächsten Commit des Haupt-Ports
+  gestagt lassen.
+- **Ein Abbruch, der Erfolg meldet.** Bei gesperrtem Branch-Ref kann `git rebase --abort` ohne
+  Fehler enden und den Checkout auf einem abgelösten HEAD lassen. Dann synct der Server nicht mehr
+  (der Haupt-Port antwortet `synced: false`, der Token bekommt `vault-busy`), und Commits bleiben
+  auf dem abgelösten HEAD; hinaus geht nichts. Sieh sie dir an und geh dann zurück auf den Branch
+  (`git switch <branch>`); push den abgelösten HEAD nicht so, wie er ist.
+- **Andere Schreibweisen eines Pfads.** Der Schutz für die eigene Notiz des Haupt-Ports vergleicht
+  den Pfad als Text: `inbox//x.md` oder `./inbox/x.md` gilt nicht als `inbox/x.md`.
 
 ## Einstellungen
 
