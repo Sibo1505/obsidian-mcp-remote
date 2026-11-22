@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { readFile, writeFile, access } from "node:fs/promises";
+import { readFile, writeFile, access, unlink } from "node:fs/promises";
 import path from "node:path";
 
 const execFileAsync = promisify(execFile);
@@ -106,6 +106,8 @@ export interface SyncResult {
   synced: boolean;
   conflict?: boolean;
   conflictPath?: string;
+  /** false: the change was not kept (commitAndPushChecked drops what it cannot push right away). */
+  saved?: false;
 }
 
 /**
@@ -122,14 +124,17 @@ export interface CommitOptions {
   quarantine?: (relativePath: string, ourContent: string) => Promise<string>;
   /** Message of the quarantine commit. Default: `conflict: quarantined <path>`. */
   conflictMessage?: (relativePath: string, conflictPath: string) => string;
+}
+
+export interface CheckedCommitOptions extends CommitOptions {
+  quarantine: (relativePath: string, ourContent: string) => Promise<string>;
   /**
    * Runs after a successful pull --rebase, still under the lock and before the push, when the
-   * caller's commit is still HEAD. `changed` lists the paths that commit changes now, relative to
-   * the vault and without following renames: Git follows a rename made on another device, so the
-   * change may have moved to another note. Returning false (or throwing) handles the result like a
-   * conflict: the rebased commit is dropped, and the caller's version goes to a quarantine copy.
+   * caller's commit is still HEAD and changes the same paths as before the rebase. `changed` lists
+   * them, relative to the vault and without following renames. Returning false (or throwing)
+   * handles the result like a conflict: the commit is dropped, its version goes to a copy.
    */
-  acceptRebased?: (relativePath: string, changed: string[]) => Promise<boolean>;
+  acceptRebased: (relativePath: string, changed: string[]) => Promise<boolean>;
 }
 
 /**
@@ -155,16 +160,81 @@ async function quarantineAndPush(
 const commitStamp = async (vaultRoot: string, rev: string) =>
   (await git(vaultRoot, ["log", "-1", "--format=%at%x00%ae%x00%B", rev])).stdout;
 
-/** Paths the HEAD commit changes, renames not followed, relative to `vaultRoot`. */
-async function changedByHead(vaultRoot: string): Promise<string[]> {
-  const prefix = (await git(vaultRoot, ["rev-parse", "--show-prefix"])).stdout.trim();
-  const { stdout } = await git(vaultRoot, ["diff", "-z", "--name-only", "--no-renames", "HEAD~1", "HEAD"]);
-  // A path outside the vault folder (when the vault is a subfolder of the repository) keeps a
-  // marker, so it never equals a vault path.
-  return stdout
-    .split("\0")
-    .filter((entry) => entry !== "")
-    .map((entry) => (entry.startsWith(prefix) ? entry.slice(prefix.length) : `(outside the vault) ${entry}`));
+const succeeds = (vaultRoot: string, args: string[]) => git(vaultRoot, args).then(() => true, () => false);
+
+/** Paths a commit changes (`from`..`to`), renames not followed, relative to the repository root. */
+async function changedPaths(vaultRoot: string, from: string, to: string): Promise<string[]> {
+  const { stdout } = await git(vaultRoot, ["diff", "-z", "--name-only", "--no-renames", from, to]);
+  return stdout.split("\0").filter((entry) => entry !== "");
+}
+
+/** The blob Git would store for a file in the working tree; undefined when there is no file. */
+async function blobOf(vaultRoot: string, file: string): Promise<string | undefined> {
+  try {
+    // Relative to the vault folder: shorter than the absolute path (Windows limits path length).
+    return (await git(vaultRoot, ["hash-object", "--", path.relative(vaultRoot, file)])).stdout.trim();
+  } catch {
+    return undefined;
+  }
+}
+
+/** True while HEAD is the commit `ours`, also after a rebase (same author, date and message). */
+async function headIs(vaultRoot: string, ours: string): Promise<boolean> {
+  const head = (await git(vaultRoot, ["rev-parse", "HEAD"])).stdout.trim();
+  return head === ours || (await commitStamp(vaultRoot, head)) === (await commitStamp(vaultRoot, ours));
+}
+
+/**
+ * Puts one path (relative to the repository root) back to HEAD: in the index always, in the
+ * working tree only while the file still holds `wrote`, so a later change of another writer stays.
+ */
+async function restorePath(vaultRoot: string, top: string, rootPath: string, wrote: string | undefined): Promise<void> {
+  const spec = `:(top,literal)${rootPath}`;
+  const file = path.join(top, rootPath);
+  const unchanged = wrote !== undefined && (await blobOf(vaultRoot, file)) === wrote;
+  const inHead = await succeeds(vaultRoot, ["cat-file", "-e", `HEAD:${rootPath}`]);
+  if (inHead) {
+    await git(vaultRoot, ["restore", "--source=HEAD", "--staged", ...(unchanged ? ["--worktree"] : []), "--", spec]);
+    return;
+  }
+  // Not in HEAD: the write created the file. Unstage it, and remove it while it is unchanged.
+  await git(vaultRoot, ["rm", "--cached", "-q", "--ignore-unmatch", "--", spec]);
+  if (unchanged) await unlink(file);
+}
+
+/**
+ * Drops the commit `ours` while it is HEAD and puts back what it changed (see restorePath).
+ * Nothing else changes: commits below it, other index entries and other files stay. Returns false,
+ * dropping nothing, when HEAD is another commit.
+ */
+async function dropCommit(vaultRoot: string, top: string, ours: string): Promise<boolean> {
+  if (!(await headIs(vaultRoot, ours))) return false;
+  const changed = await changedPaths(vaultRoot, "HEAD~1", "HEAD");
+  const wrote = new Map<string, string | undefined>();
+  for (const rootPath of changed) {
+    wrote.set(rootPath, await git(vaultRoot, ["rev-parse", `HEAD:${rootPath}`]).then((r) => r.stdout.trim(), () => undefined));
+  }
+  // First move HEAD off the commit, so a failure below can never leave it there to be pushed.
+  await git(vaultRoot, ["reset", "--soft", "HEAD~1"]);
+  for (const rootPath of changed) await restorePath(vaultRoot, top, rootPath, wrote.get(rootPath));
+  return true;
+}
+
+/**
+ * Why a checked write cannot start now (undefined when it can): another writer's change is
+ * waiting in the index or working tree, or the path itself holds a file Git does not track (or
+ * ignores). The write would otherwise commit, or later drop, what is not its own. Outside a Git
+ * repository there is nothing to protect.
+ */
+export async function uncommittedChanges(
+  vaultRoot: string,
+  relativePath: string,
+): Promise<"other-changes" | "untracked-path" | undefined> {
+  if (!(await succeeds(vaultRoot, ["rev-parse", "--is-inside-work-tree"]))) return undefined;
+  const tracked = (await git(vaultRoot, ["status", "--porcelain", "-z", "--untracked-files=no"])).stdout;
+  if (tracked !== "") return "other-changes";
+  const here = (await git(vaultRoot, ["status", "--porcelain", "-z", "--ignored", "--untracked-files=all", "--", relativePath])).stdout;
+  return here === "" ? undefined : "untracked-path";
 }
 
 export async function commitAndPush(
@@ -186,15 +256,12 @@ export async function commitAndPushLocked(
   message: string,
   options: CommitOptions = {},
 ): Promise<SyncResult> {
-  // The caller's commit before the pull, to recognize it (and its version) after the rebase.
-  let ours: string | undefined;
   try {
     await git(vaultRoot, ["add", "--", relativePath]);
     if (!(await hasStagedChanges(vaultRoot))) {
       return { synced: true };
     }
     await git(vaultRoot, ["commit", "-m", message]);
-    if (options.acceptRebased) ours = (await git(vaultRoot, ["rev-parse", "HEAD"])).stdout.trim();
   } catch (error) {
     logGitError("add/commit", error);
     return { synced: false };
@@ -224,32 +291,6 @@ export async function commitAndPushLocked(
     }
   }
 
-  if (options.acceptRebased && ours !== undefined) {
-    // The rebase went through, but Git may have carried the change somewhere else (a note moved or
-    // taken over on another device). The caller decides whether this result may be pushed.
-    let accepted = false;
-    try {
-      const head = (await git(vaultRoot, ["rev-parse", "HEAD"])).stdout.trim();
-      // A replayed commit keeps its author, date and message. Without one at HEAD, the rebase
-      // dropped the caller's commit because the remote already had that change: nothing to check.
-      const stillOurs = head === ours || (await commitStamp(vaultRoot, head)) === (await commitStamp(vaultRoot, ours));
-      accepted = !stillOurs || (await options.acceptRebased(relativePath, await changedByHead(vaultRoot)));
-    } catch (error) {
-      logGitError("check after pull --rebase", error);
-    }
-    if (!accepted) {
-      try {
-        const ourContent = (await git(vaultRoot, ["show", `${ours}:${relativePath}`])).stdout;
-        // Drop only the caller's rebased commit; everything below it stays as the pull left it.
-        await git(vaultRoot, ["reset", "--hard", "HEAD~1"]);
-        return await quarantineAndPush(vaultRoot, relativePath, ourContent, options);
-      } catch (recoveryError) {
-        logGitError("quarantine after pull --rebase", recoveryError);
-        return { synced: false, conflict: true };
-      }
-    }
-  }
-
   try {
     await git(vaultRoot, ["push"]);
   } catch (error) {
@@ -257,5 +298,156 @@ export async function commitAndPushLocked(
     return { synced: false };
   }
 
+  return { synced: true };
+}
+
+const NOT_SAVED: SyncResult = { synced: false, saved: false };
+
+/**
+ * The commit of a scoped write. The caller holds the git lock, has just written `relativePath` and
+ * has made sure nothing else is uncommitted (uncommittedChanges). The change goes out right away,
+ * checked against the state it goes out with, or it is not kept at all:
+ * - the commit holds only `relativePath`;
+ * - after the pull --rebase it must change the same paths as before (Git follows a rename made on
+ *   another device, also into a denied folder) and `acceptRebased` must agree; otherwise the commit
+ *   is dropped and its version goes to a quarantine copy, which goes out the same way;
+ * - when a commit, the pull or the push fails, the change is dropped and the result says
+ *   `saved: false`. A token's commit never waits on the server for a later push, which would send
+ *   it out unchecked.
+ * Dropping touches only what this write changed (dropCommit): older commits of other writers,
+ * their index entries and their files stay. Outside a Git repository, as before: `synced: false`.
+ */
+export async function commitAndPushChecked(
+  vaultRoot: string,
+  relativePath: string,
+  message: string,
+  options: CheckedCommitOptions,
+): Promise<SyncResult> {
+  let top: string;
+  let prefix: string;
+  try {
+    top = (await git(vaultRoot, ["rev-parse", "--show-toplevel"])).stdout.trim();
+    prefix = (await git(vaultRoot, ["rev-parse", "--show-prefix"])).stdout.trim();
+  } catch (error) {
+    logGitError("rev-parse", error);
+    return { synced: false };
+  }
+  const rootPath = `${prefix}${relativePath}`;
+  const wrote = await blobOf(vaultRoot, path.join(top, rootPath));
+
+  let ours: string | undefined;
+  const dropOurs = async () => {
+    try {
+      // Not committed: put back only what is still uncommitted of this write. Committed: drop the
+      // commit while it is HEAD (after a rebase that dropped it, there is nothing left to drop).
+      if (ours === undefined) await restorePath(vaultRoot, top, rootPath, wrote);
+      else await dropCommit(vaultRoot, top, ours);
+    } catch (error) {
+      logGitError("drop the scoped change", error);
+    }
+  };
+
+  try {
+    await git(vaultRoot, ["add", "--", relativePath]);
+    if (!(await hasStagedChanges(vaultRoot))) return { synced: true };
+    await git(vaultRoot, ["commit", "-m", message, "--", relativePath]);
+    ours = (await git(vaultRoot, ["rev-parse", "HEAD"])).stdout.trim();
+  } catch (error) {
+    logGitError("add/commit", error);
+    await dropOurs();
+    return NOT_SAVED;
+  }
+
+  /** The version goes to a copy next to the note: dropped from HEAD first, also without it. */
+  const toCopy = async (rebaseOthersFirst: boolean): Promise<SyncResult> => {
+    let ourContent: string | undefined;
+    try {
+      // cat-file, not show: show first tries the argument as a file name, which fails for a long path
+      // on Windows. "./" makes the path relative to the vault folder, not to the repository root.
+      ourContent = (await git(vaultRoot, ["cat-file", "blob", `${ours}:./${relativePath}`])).stdout;
+    } catch (error) {
+      logGitError("show the scoped version", error);
+    }
+    await dropOurs();
+    if (ourContent === undefined) return { synced: false, conflict: true, saved: false };
+    if (rebaseOthersFirst) {
+      // The branch is still on the old remote state: bring the older commits (of other writers)
+      // onto the new one, so the copy can go out on top.
+      try {
+        await git(vaultRoot, ["pull", "--rebase"]);
+      } catch (error) {
+        logGitError("pull --rebase before the copy", error);
+        if (await isRebaseInProgress(vaultRoot)) await git(vaultRoot, ["rebase", "--abort"]).catch(() => undefined);
+        return { synced: false, conflict: true, saved: false };
+      }
+    }
+    let conflictPath: string | undefined;
+    let copy: string | undefined;
+    let copyWrote: string | undefined;
+    try {
+      conflictPath = await options.quarantine(relativePath, ourContent);
+      copyWrote = await blobOf(vaultRoot, path.join(top, prefix + conflictPath));
+      await git(vaultRoot, ["add", "--", conflictPath]);
+      const conflictMessage = options.conflictMessage?.(relativePath, conflictPath) ?? `conflict: quarantined ${relativePath}`;
+      await git(vaultRoot, ["commit", "-m", conflictMessage, "--", conflictPath]);
+      copy = (await git(vaultRoot, ["rev-parse", "HEAD"])).stdout.trim();
+      await git(vaultRoot, ["push"]);
+      return { synced: false, conflict: true, conflictPath };
+    } catch (error) {
+      logGitError("quarantine copy", error);
+      try {
+        if (copy !== undefined) await dropCommit(vaultRoot, top, copy);
+        else if (conflictPath !== undefined) await restorePath(vaultRoot, top, prefix + conflictPath, copyWrote);
+      } catch (dropError) {
+        logGitError("drop the quarantine copy", dropError);
+      }
+      return { synced: false, conflict: true, saved: false };
+    }
+  };
+
+  try {
+    await git(vaultRoot, ["pull", "--rebase"]);
+  } catch (error) {
+    logGitError("pull --rebase", error);
+    if (!(await isRebaseInProgress(vaultRoot))) {
+      // The remote cannot be reached (or refused): the change does not wait here for a later push.
+      await dropOurs();
+      return NOT_SAVED;
+    }
+    try {
+      await git(vaultRoot, ["rebase", "--abort"]);
+    } catch (abortError) {
+      logGitError("rebase --abort", abortError);
+      return { synced: false, conflict: true, saved: false };
+    }
+    return toCopy(true);
+  }
+
+  // The rebase went through, but Git may have carried the change somewhere else.
+  let accepted = false;
+  try {
+    if (!(await headIs(vaultRoot, ours))) {
+      // The rebase dropped the commit because the remote already had that change: nothing of
+      // this write is left to check.
+      accepted = true;
+    } else {
+      const before = await changedPaths(vaultRoot, `${ours}~1`, ours);
+      const after = await changedPaths(vaultRoot, "HEAD~1", "HEAD");
+      const same = before.length === after.length && before.every((entry) => after.includes(entry));
+      const vaultRelative = after.map((entry) => (entry.startsWith(prefix) ? entry.slice(prefix.length) : `(outside the vault) ${entry}`));
+      accepted = same && (await options.acceptRebased(relativePath, vaultRelative));
+    }
+  } catch (error) {
+    logGitError("check after pull --rebase", error);
+  }
+  if (!accepted) return toCopy(false);
+
+  try {
+    await git(vaultRoot, ["push"]);
+  } catch (error) {
+    logGitError("push", error);
+    await dropOurs();
+    return NOT_SAVED;
+  }
   return { synced: true };
 }
