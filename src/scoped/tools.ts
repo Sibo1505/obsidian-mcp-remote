@@ -248,7 +248,7 @@ function syncNote(notePath: string, sync: SyncResult): { note?: string } {
  */
 async function checkNothingPending(ctx: ScopedToolContext, notePath: string): Promise<void> {
   const vault = ctx.config.VAULT_PATH;
-  if (!(await releaseHeldBack(vault))) {
+  if ((await releaseHeldBack(vault)) === "held") {
     throw new ScopedDenied("held-back", "Not written: the server holds back an earlier change it could not undo; try again later");
   }
   let pending: Awaited<ReturnType<typeof uncommittedChanges>>;

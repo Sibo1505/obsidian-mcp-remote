@@ -608,3 +608,173 @@ test("F-9: vault-busy names how many paths are open and the first one in the ser
     );
   });
 });
+
+// --- round 9: undoing knows every path, cleaning up never takes the owner's write (F-13 to F-15, SEC-026/027) ---
+
+test("N1r: the rebase moved the change into a denied folder and the index is locked while undoing: held back, never pushed", async () => {
+  await withGitFixture(async (vaultRoot, otherClone) => {
+    await withScopedServer(
+      [wholeVault()],
+      async ({ baseUrl }) => {
+        for (const note of ["inbox/idea.md", "inbox/keep.md"]) {
+          assert.equal(json((await callTool(baseUrl, "vault_write", { path: note, content: IDEA })).text).synced, true);
+        }
+        const moved = await otherDevice(otherClone, "inbox/idea.md", { removeFields: false, moveTo: "rules/idea.md" });
+        // Right after the rebase another Git process holds the index: the reset works, putting back does not.
+        const indexLock = path.join(vaultRoot, ".git", "index.lock");
+        const unhook = await hookWith(path.join(vaultRoot, ".git"), "post-rewrite", `: > '${sh(indexLock)}'`);
+        const result = json((await callTool(baseUrl, "vault_patch", { ...APPEND, path: "inbox/idea.md" })).text);
+        assert.equal(result.heldBack, true, JSON.stringify(result));
+        assert.doesNotMatch(String(result.note), /nothing changed/);
+        await unhook();
+        await rm(indexLock, { force: true });
+
+        assert.equal(json((await callTool(baseUrl, "vault_write", { path: "inbox/other.md", content: "x\n" })).text).synced, true);
+        await withMainServer(vaultRoot, async (call) => {
+          assert.equal(json((await call("vault_write", { path: "main.md", content: "# main\n" })).text).synced, true);
+        });
+        await pullOther(otherClone);
+        assert.equal(await readFile(path.join(otherClone, "rules", "idea.md"), "utf-8"), moved.text);
+        assert.equal((await gitIn(otherClone, ["log", "-GTOKEN-WAS-HERE", "--format=%h"])).stdout.trim(), "");
+        assert.equal(await status(vaultRoot), "");
+      },
+      { vaultRoot },
+    );
+  });
+});
+
+for (const variant of ["N3a: the same text", "N3c: another text"] as const) {
+  test(`${variant}: the main port writes the note of a held-back commit; its write is what is kept and pushed`, async () => {
+    await withGitFixture(async (vaultRoot, otherClone) => {
+      await withScopedServer(
+        [wholeVault()],
+        async ({ baseUrl }) => {
+          assert.equal(json((await callTool(baseUrl, "vault_write", { path: "inbox/idea.md", content: IDEA })).text).synced, true);
+          const unhook = await hookWith(path.join(path.dirname(vaultRoot), "origin.git"), "pre-receive", `: > '${sh(lockRef(vaultRoot))}'\nexit 1`);
+          assert.equal(json((await callTool(baseUrl, "vault_patch", { ...APPEND, path: "inbox/idea.md" })).text).heldBack, true);
+          await unhook();
+          await rm(lockRef(vaultRoot), { force: true });
+
+          const onDisk = await readFile(path.join(vaultRoot, "inbox", "idea.md"), "utf-8");
+          const mainText = variant.startsWith("N3a") ? onDisk : `${onDisk}- main port line\n`;
+          await withMainServer(vaultRoot, async (call) => {
+            assert.equal(json((await call("vault_write", { path: "inbox/idea.md", content: mainText })).text).synced, true);
+          });
+          assert.equal(await readFile(path.join(vaultRoot, "inbox", "idea.md"), "utf-8"), mainText);
+          await pullOther(otherClone);
+          assert.equal(await readFile(path.join(otherClone, "inbox", "idea.md"), "utf-8"), mainText);
+          assert.equal(await status(vaultRoot), "");
+        },
+        { vaultRoot },
+      );
+    });
+  });
+}
+
+test("D7b / SEC-026: two writes of a note in the same second, the second refused: the first, pushed one stays", async () => {
+  await withGitFixture(async (vaultRoot, otherClone) => {
+    await withScopedServer(
+      [wholeVault()],
+      async ({ baseUrl }) => {
+        const unhook = await hookWith(
+          path.join(path.dirname(vaultRoot), "origin.git"),
+          "pre-receive",
+          'while read old new ref; do if git log -p "$old..$new" | grep -q REJECT-ME; then exit 1; fi; done\nexit 0',
+        );
+        // The same author second for both commits, as on a fast server with the remote nearby.
+        process.env.GIT_AUTHOR_DATE = "2026-11-22T10:00:00Z";
+        try {
+          const first = json((await callTool(baseUrl, "vault_write", { path: "inbox/s.md", content: "# s\nfirst TOKEN-OK\n" })).text);
+          assert.equal(first.synced, true, JSON.stringify(first));
+          const second = json((await callTool(baseUrl, "vault_write", { path: "inbox/s.md", content: "# s\nREJECT-ME\n" })).text);
+          assert.deepEqual({ saved: second.saved, heldBack: second.heldBack }, { saved: false, heldBack: undefined });
+        } finally {
+          delete process.env.GIT_AUTHOR_DATE;
+        }
+        await unhook();
+        assert.equal((await gitIn(vaultRoot, ["rev-list", "--count", "HEAD..origin/main"])).stdout.trim(), "0");
+        assert.match(await readFile(path.join(vaultRoot, "inbox", "s.md"), "utf-8"), /first TOKEN-OK/);
+        assert.equal(await status(vaultRoot), "");
+        await pullOther(otherClone);
+        assert.match(await readFile(path.join(otherClone, "inbox", "s.md"), "utf-8"), /first TOKEN-OK/);
+      },
+      { vaultRoot },
+    );
+  });
+});
+
+test("D4 / SEC-027: another writer's commit with a line that only looks like the trailer is kept and goes out", async () => {
+  await withGitFixture(async (vaultRoot, otherClone) => {
+    await mkdir(path.join(vaultRoot, "p3k"), { recursive: true });
+    await writeFile(path.join(vaultRoot, "p3k", "owner.md"), "# the owner's note\n");
+    await gitIn(vaultRoot, ["add", "p3k/owner.md"]);
+    await gitIn(vaultRoot, ["commit", "-m", "vault_write: p3k/a\nScoped-Token: b.md"]);
+    await withMainServer(vaultRoot, async (call) => {
+      assert.equal(json((await call("vault_write", { path: "main.md", content: "# main\n" })).text).synced, true);
+    });
+    await withScopedServer(
+      [wholeVault()],
+      async ({ baseUrl }) => {
+        assert.equal(json((await callTool(baseUrl, "vault_write", { path: "inbox/n.md", content: "x\n" })).text).synced, true);
+      },
+      { vaultRoot },
+    );
+    assert.equal(await readFile(path.join(vaultRoot, "p3k", "owner.md"), "utf-8"), "# the owner's note\n");
+    await pullOther(otherClone);
+    assert.equal(await readFile(path.join(otherClone, "p3k", "owner.md"), "utf-8"), "# the owner's note\n");
+  });
+});
+
+for (const variant of ["no-upstream", "no-remote", "no-repo"] as const) {
+  test(`N5: the main port ${variant === "no-repo" ? "outside a Git repository" : `with ${variant.replace("no-", "no ")}`} writes as before`, async () => {
+    if (variant === "no-repo") {
+      const dir = await mkdtemp(path.join(tmpdir(), "no-repo-"));
+      try {
+        await withMainServer(dir, async (call) => {
+          assert.deepEqual(json((await call("vault_write", { path: "main.md", content: "# main\n" })).text), { path: "main.md", written: true, synced: false });
+        });
+        assert.equal(await readFile(path.join(dir, "main.md"), "utf-8"), "# main\n");
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+      return;
+    }
+    await withGitFixture(async (vaultRoot) => {
+      if (variant === "no-upstream") await gitIn(vaultRoot, ["branch", "--unset-upstream"]);
+      else await gitIn(vaultRoot, ["remote", "remove", "origin"]);
+      await withMainServer(vaultRoot, async (call) => {
+        for (const note of ["main.md", "main2.md"]) {
+          assert.deepEqual(json((await call("vault_write", { path: note, content: "# main\n" })).text), { path: note, written: true, synced: false });
+        }
+      });
+      assert.deepEqual((await gitIn(vaultRoot, ["log", "-2", "--format=%s"])).stdout.trim().split("\n"), ["vault_write: main2.md", "vault_write: main.md"]);
+      assert.equal(await status(vaultRoot), "");
+    });
+  });
+}
+
+test("N3a, across two writes: the main port writes the held-back note during the error state, then another note: both of its writes go out", async () => {
+  await withGitFixture(async (vaultRoot, otherClone) => {
+    await withScopedServer(
+      [wholeVault()],
+      async ({ baseUrl }) => {
+        assert.equal(json((await callTool(baseUrl, "vault_write", { path: "inbox/idea.md", content: IDEA })).text).synced, true);
+        const unhook = await hookWith(path.join(path.dirname(vaultRoot), "origin.git"), "pre-receive", `: > '${sh(lockRef(vaultRoot))}'\nexit 1`);
+        assert.equal(json((await callTool(baseUrl, "vault_patch", { ...APPEND, path: "inbox/idea.md" })).text).heldBack, true);
+        await unhook();
+        const onDisk = await readFile(path.join(vaultRoot, "inbox", "idea.md"), "utf-8");
+        await withMainServer(vaultRoot, async (call) => {
+          // Still locked: the owner's write of the same bytes waits, staged.
+          assert.equal(json((await call("vault_write", { path: "inbox/idea.md", content: onDisk })).text).synced, false);
+          await rm(lockRef(vaultRoot), { force: true });
+          assert.equal(json((await call("vault_write", { path: "main.md", content: "# main\n" })).text).synced, true);
+        });
+        await pullOther(otherClone);
+        assert.equal(await readFile(path.join(otherClone, "inbox", "idea.md"), "utf-8"), onDisk);
+        assert.equal(await readFile(path.join(otherClone, "main.md"), "utf-8"), "# main\n");
+        assert.equal(await status(vaultRoot), "");
+      },
+      { vaultRoot },
+    );
+  });
+});

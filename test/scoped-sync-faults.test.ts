@@ -204,7 +204,7 @@ test("rebase --abort fails after a real conflict: held back, and the next write 
         await gitIn(otherClone, ["commit", "-am", "other device edits"]);
         await gitIn(otherClone, ["push", "origin", "main"]);
 
-        failGit(is("rebase", "--abort"), 1);
+        failGit(is("rebase", "--abort"), Infinity); // every try fails; a single failure is retried (N2, once)
         const result = json((await callTool(baseUrl, "vault_write", { path: "inbox/idea.md", content: "# mine\n" })).text);
         assert.equal(result.heldBack, true, JSON.stringify(result));
         clearFaults();
@@ -259,6 +259,207 @@ test("S7, silent: unstaging reports success but does nothing: the check afterwar
         await gitIn(otherClone, ["pull", "--no-rebase", "--no-edit"]);
         assert.equal(await exists(path.join(otherClone, "inbox", "s7.md")), false);
         assert.equal(await status(vaultRoot), "");
+      },
+      { vaultRoot },
+    );
+  });
+});
+
+// --- round 9 (F-13, F-14, F-15) ---
+
+test("N1i: putting back fails once after the rebase moved the change: the retry puts back the moved path too", async () => {
+  await withGitFixture(async (vaultRoot, otherClone) => {
+    await withScopedServer(
+      [wholeVault()],
+      async ({ baseUrl }) => {
+        for (const note of ["inbox/idea.md", "inbox/keep.md"]) {
+          assert.equal(json((await callTool(baseUrl, "vault_write", { path: note, content: IDEA })).text).synced, true);
+        }
+        const moved = await moveOnOtherDevice(otherClone, "inbox/idea.md", "rules/idea.md");
+        failGit(is("restore"), 1);
+        const result = json((await callTool(baseUrl, "vault_patch", { ...APPEND, path: "inbox/idea.md" })).text);
+        clearFaults();
+        assert.equal(result.conflict, true, JSON.stringify(result));
+        assert.match(String(result.conflictPath), /^inbox\/idea-conflict-\d{14}\.md$/);
+        assert.equal(await status(vaultRoot), "");
+        await withMainServer(vaultRoot, async (call) => {
+          assert.equal(json(await call("vault_write", { path: "main.md", content: "# main\n" })).synced, true);
+        });
+        await gitIn(otherClone, ["pull", "--no-rebase", "--no-edit"]);
+        assert.equal(await readFile(path.join(otherClone, "rules", "idea.md"), "utf-8"), moved);
+      },
+      { vaultRoot },
+    );
+  });
+});
+
+test("N1u: putting back fails once without a move: the retry finishes it, a plain not-saved and nothing held back", async () => {
+  await withGitFixture(async (vaultRoot) => {
+    await withScopedServer(
+      [wholeVault()],
+      async ({ baseUrl }) => {
+        assert.equal(json((await callTool(baseUrl, "vault_write", { path: "inbox/idea.md", content: IDEA })).text).synced, true);
+        const hook = path.join(path.dirname(vaultRoot), "origin.git", "hooks", "pre-receive");
+        await writeFile(hook, "#!/bin/sh\nexit 1\n");
+        await chmod(hook, 0o755);
+        failGit(is("restore"), 1);
+        const result = json((await callTool(baseUrl, "vault_patch", { ...APPEND, path: "inbox/idea.md" })).text);
+        clearFaults();
+        await rm(hook, { force: true });
+        assert.deepEqual({ saved: result.saved, heldBack: result.heldBack }, { saved: false, heldBack: undefined });
+        assert.equal(await status(vaultRoot), "");
+        assert.equal(await unpushed(vaultRoot), "");
+      },
+      { vaultRoot },
+    );
+  });
+});
+
+/** A real conflict: the other device edits the note the token is about to change. */
+async function conflictOnOtherDevice(otherClone: string): Promise<string> {
+  await gitIn(otherClone, ["pull", "--no-rebase"]);
+  const text = "---\nsource: test-agent\n---\nedited on another device\n";
+  await writeFile(path.join(otherClone, "inbox", "idea.md"), text);
+  await gitIn(otherClone, ["commit", "-am", "other device edits"]);
+  await gitIn(otherClone, ["push", "origin", "main"]);
+  return text;
+}
+
+test("N2, once: rebase --abort fails once after a real conflict: the retry works and the copy goes out as usual", async () => {
+  await withGitFixture(async (vaultRoot, otherClone) => {
+    await withScopedServer(
+      [wholeVault()],
+      async ({ baseUrl }) => {
+        assert.equal(json((await callTool(baseUrl, "vault_write", { path: "inbox/idea.md", content: IDEA })).text).synced, true);
+        await conflictOnOtherDevice(otherClone);
+        failGit(is("rebase", "--abort"), 1);
+        const result = json((await callTool(baseUrl, "vault_write", { path: "inbox/idea.md", content: "# mine\n" })).text);
+        clearFaults();
+        assert.equal(result.conflict, true, JSON.stringify(result));
+        assert.match(String(result.conflictPath), /^inbox\/idea-conflict-\d{14}\.md$/);
+        assert.equal(await unpushed(vaultRoot), "");
+      },
+      { vaultRoot },
+    );
+  });
+});
+
+test("N2: the rebase stays after a real conflict; the main port's new note survives the cleanup and reaches the remote", async () => {
+  await withGitFixture(async (vaultRoot, otherClone) => {
+    await withScopedServer(
+      [wholeVault()],
+      async ({ baseUrl }) => {
+        assert.equal(json((await callTool(baseUrl, "vault_write", { path: "inbox/idea.md", content: IDEA })).text).synced, true);
+        const theirs = await conflictOnOtherDevice(otherClone);
+        failGit(is("rebase", "--abort"), Infinity);
+        const result = json((await callTool(baseUrl, "vault_write", { path: "inbox/idea.md", content: "# mine\n" })).text);
+        clearFaults();
+        assert.equal(result.heldBack, true, JSON.stringify(result));
+
+        await withMainServer(vaultRoot, async (call) => {
+          assert.equal(json(await call("vault_write", { path: "main-n2.md", content: "# main N2\n" })).synced, true);
+        });
+        assert.equal(await readFile(path.join(vaultRoot, "main-n2.md"), "utf-8"), "# main N2\n");
+        assert.equal(await status(vaultRoot), "");
+        assert.equal(await unpushed(vaultRoot), "");
+        await gitIn(otherClone, ["pull", "--no-rebase", "--no-edit"]);
+        assert.equal(await readFile(path.join(otherClone, "main-n2.md"), "utf-8"), "# main N2\n");
+        assert.equal(await readFile(path.join(otherClone, "inbox", "idea.md"), "utf-8"), theirs);
+      },
+      { vaultRoot },
+    );
+  });
+});
+
+test("N3b: a staged new note held back, and the main port writes the same bytes there: its write is kept and pushed", async () => {
+  await withGitFixture(async (vaultRoot, otherClone) => {
+    await withScopedServer(
+      [wholeVault()],
+      async ({ baseUrl }) => {
+        const hook = path.join(vaultRoot, ".git", "hooks", "pre-commit");
+        await writeFile(hook, "#!/bin/sh\nexit 1\n");
+        await chmod(hook, 0o755);
+        failGit(is("rm", "--cached"), Infinity);
+        assert.equal(json((await callTool(baseUrl, "vault_write", { path: "inbox/s7.md", content: "# S7-TOKEN\n" })).text).heldBack, true);
+        await rm(hook, { force: true });
+        clearFaults();
+        const onDisk = await readFile(path.join(vaultRoot, "inbox", "s7.md"), "utf-8");
+        await withMainServer(vaultRoot, async (call) => {
+          assert.equal(json(await call("vault_write", { path: "inbox/s7.md", content: onDisk })).synced, true);
+        });
+        assert.equal(await readFile(path.join(vaultRoot, "inbox", "s7.md"), "utf-8"), onDisk);
+        await gitIn(otherClone, ["pull", "--no-rebase", "--no-edit"]);
+        assert.equal(await readFile(path.join(otherClone, "inbox", "s7.md"), "utf-8"), onDisk);
+        assert.equal(await status(vaultRoot), "");
+      },
+      { vaultRoot },
+    );
+  });
+});
+
+test("owner marks end with the main port's commit: a later held-back change of the token on that path is still cleaned up", async () => {
+  await withGitFixture(async (vaultRoot, otherClone) => {
+    await withScopedServer(
+      [makeScopedToken({ writeDir: "", writeDeny: ["rules"], readDeny: [], modifyExisting: "any" })],
+      async ({ baseUrl }) => {
+        const hook = path.join(vaultRoot, ".git", "hooks", "pre-commit");
+        const commitsFail = async (...undoStep: string[]) => {
+          await writeFile(hook, "#!/bin/sh\nexit 1\n");
+          await chmod(hook, 0o755);
+          failGit(is(...undoStep), Infinity);
+        };
+        const commitsWork = async () => {
+          await rm(hook, { force: true });
+          clearFaults();
+        };
+        await commitsFail("rm", "--cached");
+        assert.equal(json((await callTool(baseUrl, "vault_write", { path: "inbox/s7.md", content: "# S7\n" })).text).heldBack, true);
+        await withMainServer(vaultRoot, async (call) => {
+          // Held back: the owner's write of inbox/p.md is staged and marked as the owner's.
+          assert.equal(json(await call("vault_write", { path: "inbox/p.md", content: "# owner\n" })).synced, false);
+          await commitsWork();
+          // A token write cleans up first (then it is refused: the owner's staged write is open),
+          // so the main port's next write finds nothing left but its own mark.
+          const busy = await callTool(baseUrl, "vault_write", { path: "inbox/x.md", content: "x\n" });
+          assert.match(busy.text, /not committed yet/);
+          assert.equal(json(await call("vault_write", { path: "inbox/q.md", content: "# q\n" })).synced, true);
+        });
+        // Later the token writes inbox/p.md and is held back again; the owner's mark must be gone.
+        await commitsFail("restore"); // inbox/p.md is committed now: undoing puts it back with restore
+        assert.equal(json((await callTool(baseUrl, "vault_write", { path: "inbox/p.md", content: "# TOKEN-WAS-HERE\n" })).text).heldBack, true);
+        await commitsWork();
+        await withMainServer(vaultRoot, async (call) => {
+          assert.equal(json(await call("vault_write", { path: "inbox/r.md", content: "# r\n" })).synced, true);
+        });
+        await gitIn(otherClone, ["pull", "--no-rebase", "--no-edit"]);
+        assert.equal(await readFile(path.join(otherClone, "inbox", "p.md"), "utf-8"), "# owner\n");
+        assert.equal((await gitIn(otherClone, ["log", "-GTOKEN-WAS-HERE", "--format=%h"])).stdout.trim(), "");
+        assert.equal(await status(vaultRoot), "");
+      },
+      { vaultRoot },
+    );
+  });
+});
+
+test("N2r: a read aborts the rebase left half-way and keeps a file another writer changed meanwhile", async () => {
+  await withGitFixture(async (vaultRoot, otherClone) => {
+    await withScopedServer(
+      [wholeVault()],
+      async ({ baseUrl }) => {
+        for (const note of ["inbox/idea.md", "inbox/keep.md"]) {
+          assert.equal(json((await callTool(baseUrl, "vault_write", { path: note, content: IDEA })).text).synced, true);
+        }
+        await conflictOnOtherDevice(otherClone);
+        failGit(is("rebase", "--abort"), Infinity);
+        assert.equal(json((await callTool(baseUrl, "vault_write", { path: "inbox/idea.md", content: "# mine\n" })).text).heldBack, true);
+        clearFaults();
+        // The main port writes outside the git lock (I-14): its change is on disk before it commits.
+        await writeFile(path.join(vaultRoot, "inbox", "keep.md"), "# changed by the main port\n");
+        await withMainServer(vaultRoot, async (call) => {
+          await call("vault_read", { path: "inbox/keep.md" });
+        });
+        assert.equal(await readFile(path.join(vaultRoot, "inbox", "keep.md"), "utf-8"), "# changed by the main port\n");
+        assert.equal(await import("node:fs/promises").then((fs) => fs.access(path.join(vaultRoot, ".git", "rebase-merge")).then(() => true, () => false)), false);
       },
       { vaultRoot },
     );
