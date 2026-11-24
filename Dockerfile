@@ -1,7 +1,7 @@
 # Node 24 LTS on Debian 13 (trixie), pinned to an exact version and its multi-arch index digest so a
 # rebuild gets the same base image instead of whatever the tag points to on that day. Bump both
 # stages together.
-FROM node:24.22.2-trixie-slim@sha256:0820eaa85e07d0490446dd01d14707e17e6108a36988cf374899cd057eb3812d AS build
+FROM node:26.13.0-trixie-slim@sha256:5adad64f9a1fca2d51972caa65983634c8a774eb300d72b20f7f2a0f60368072 AS build
 WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm install
@@ -12,7 +12,7 @@ COPY src ./src
 COPY public ./public
 RUN npm run build
 
-FROM node:24.22.2-trixie-slim@sha256:0820eaa85e07d0490446dd01d14707e17e6108a36988cf374899cd057eb3812d
+FROM node:26.13.0-trixie-slim@sha256:5adad64f9a1fca2d51972caa65983634c8a774eb300d72b20f7f2a0f60368072
 WORKDIR /app
 ENV NODE_ENV=production
 # vault/git.ts shells out to the git CLI at runtime (commit+push after writes, JIT pull before
